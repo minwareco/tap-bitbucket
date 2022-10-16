@@ -1,0 +1,86 @@
+{
+  "type": ["null", "object"],
+  "additionalProperties": false,
+  "properties": {
+    "_sdc_repository": {
+      "type": ["null", "string"]
+    },
+    "id": {
+      "type": ["string"],
+      "description": "Unique identifier of commit, <_sdc_repository>/<hash>"
+    },
+    "hash": {
+      "type": ["string"],
+      "description": ""
+    },
+    "date": {
+      "type": ["null", "string"],
+      "format": "date-time",
+      "description": ""
+    },
+    "author": {
+      "$ref": "Author"
+    },
+    "message": {
+      "type": ["null", "string"],
+      "description": ""
+    },
+    "parents": {
+      "type": ["null", "array"],
+      "items": {
+        "type": ["null", "object"],
+        "additionalProperties": false,
+        "properties": {
+          "hash": {
+            "type": ["null", "string"],
+            "description": "The git hash of the parent commit"
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "Author": {
+      "type": ["null", "object"],
+      "additionalProperties": false,
+      "properties": {
+        "raw": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "description": ""
+        },
+        "user": {
+          "type": [
+            "null",
+            "object"
+          ],
+          "description": "",
+          "properties": {
+            "uuid": {
+              "type": [
+                "string"
+              ],
+              "description": ""
+            },
+            "username": {
+              "type": [
+                "null",
+                "string"
+              ],
+              "description": ""
+            },
+            "display_name": {
+              "type": [
+                "null",
+                "string"
+              ],
+              "description": ""
+            }
+          }
+        }
+      }
+    }
+  }
+}
