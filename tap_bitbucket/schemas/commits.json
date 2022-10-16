@@ -19,7 +19,7 @@
       "description": ""
     },
     "author": {
-      "$ref": "Author"
+      "$ref": "#/definitions/Author"
     },
     "message": {
       "type": ["null", "string"],

@@ -1,0 +1,205 @@
+{
+  "type": ["null", "object"],
+  "additionalProperties": false,
+  "properties": {
+    "_sdc_repository": {
+      "type": ["string"],
+      "description": ""
+    },
+    "id": {
+      "type": ["string"],
+      "description": "A unique ID for the PR in format {org}/{repo}/{number}"
+    },
+    "number": {
+      "type": ["integer"],
+      "description": "The PR number within the repo (e.g. 1, 12, 65)"
+    },
+    "title": {
+      "type": ["null", "string"],
+      "description": ""
+    },
+    "summary": {
+      "type": ["null", "string"],
+      "description": ""
+    },
+    "state": {
+      "type": ["null", "string"],
+      "description": "One of OPEN, MERGED, DECLINED, SUPERSEDED"
+    },
+    "author": {
+      "$ref": "#/definitions/Account"
+    },
+    "source": {
+      "$ref": "#/definitions/PullRequestEndpoint"
+    },
+    "destination": {
+      "$ref": "#/definitions/PullRequestEndpoint"
+    },
+    "merge_commit": {
+      "type": ["null", "object"],
+      "description": "",
+      "properties": {
+        "hash": {
+          "type": ["null", "string"],
+          "description": ""
+        }
+      }
+    },
+    "comment_count": {
+      "type": ["null", "integer"],
+      "description": ""
+    },
+    "task_count": {
+      "type": ["null", "integer"],
+      "description": ""
+    },
+    "close_source_branch": {
+      "type": ["null", "boolean"],
+      "description": ""
+    },
+    "closed_by": {
+      "$ref": "#/definitions/Account"
+    },
+    "reason": {
+      "type": ["null", "string"],
+      "description": ""
+    },
+    "created_on": {
+      "type": ["null", "string"],
+      "description": "",
+      "format": "date-time"
+    },
+    "updated_on": {
+      "type": ["null", "string"],
+      "description": "",
+      "format": "date-time"
+    },
+    "reviewers": {
+      "type": ["null", "array"],
+      "description": "",
+      "items": {
+        "$ref": "#/definitions/Account"
+      }
+    },
+    "participants": {
+      "type": ["null", "array"],
+      "description": "",
+      "items": {
+        "$ref": "#/definitions/Participant"
+      }
+    }
+  },
+  "definitions": {
+    "Account": {
+      "type": ["null", "object"],
+      "additionalProperties": false,
+      "properties": {
+        "uuid": {
+          "type": [
+            "string"
+          ],
+          "description": ""
+        },
+        "username": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "description": ""
+        },
+        "display_name": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "description": ""
+        }
+      }
+    },
+    "Participant": {
+      "type": ["null", "object"],
+      "additionalProperties": false,
+      "properties": {
+        "user": {
+          "$ref": "#/definitions/Account"
+        },
+        "role": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "description": "One of PARTICIPANT, REVIEWER"
+        },
+        "approved": {
+          "type": [
+            "null",
+            "boolean"
+          ],
+          "description": ""
+        },
+        "state": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "description": "One of approved, changes_requested, null"
+        },
+        "participated_on": {
+          "type": ["null", "string"],
+          "description": "",
+          "format": "date-time"
+        }
+      }
+    },
+    "PullRequestEndpoint": {
+      "type": ["null", "object"],
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "description": ""
+        },
+        "commit_hash": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "description": ""
+        },
+        "repository": {
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": false,
+          "description": "",
+          "properties": {
+            "uuid": {
+              "type": [
+                "string"
+              ],
+              "description": ""
+            },
+            "full_name": {
+              "type": [
+                "null",
+                "string"
+              ],
+              "description": ""
+            },
+            "name": {
+              "type": [
+                "null",
+                "string"
+              ],
+              "description": ""
+            }
+          }
+        }
+      }
+    }
+  }
+}

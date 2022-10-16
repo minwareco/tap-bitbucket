@@ -1,144 +1,54 @@
 {
   "type": ["null", "object"],
+  "additionalProperties": false,
   "properties": {
-    "_sdc_repository": {
-      "type": ["string"],
-      "description": "Unique string identifying the repository in the format {org}/{repository}"
+    "id": {
+      "type": [
+        "string"
+      ],
+      "description": "Unique identifier of <source>:<org_name>/<repo_name>"
     },
-    "uuid": {
-      "type": ["null", "string"],
-      "description": "UUID of the repository"
+    "source": {
+      "type": [
+        "null",
+        "string"
+      ]
     },
-    "full_name": {
-      "type": ["null", "string"],
-      "description": "Full name of the repository in the format {org}/{repository}"
+    "org_name": {
+      "type": [
+        "null",
+        "string"
+      ]
     },
-    "name": {
-      "type": ["null", "string"],
-      "description": "Name of the repository"
+    "repo_name": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "is_source_public": {
+      "type": [
+        "null",
+        "boolean"
+      ]
     },
     "description": {
-      "type": ["null", "string"],
-      "description": ""
-    },
-    "is_private": {
-      "type": ["null", "boolean"],
-      "description": "Is the repository disabled?"
-    },
-    "owner": {
-      "$ref": "#/definitions/Account"
-    },
-    "created_on": {
       "type": [
         "null",
         "string"
-      ],
-      "format": "date-time"
+      ]
     },
-    "updated_on": {
+    "fork_org_name": {
       "type": [
         "null",
         "string"
-      ],
-      "format": "date-time"
+      ]
     },
-    "size": {
-      "type": ["null", "integer"],
-      "description": ""
-    },
-    "language": {
-      "type": ["null", "string"],
-      "description": ""
-    },
-    "has_issues": {
-      "type": ["null", "boolean"],
-      "description": ""
-    },
-    "has_wiki": {
-      "type": ["null", "boolean"],
-      "description": ""
-    },
-    "fork_policy": {
-      "type": ["null", "string"],
-      "description": "One of allow_forks, no_public_forks, no_forks"
-    },
-    "mainbranch": {
-      "$ref": "#/definitions/Branch"
-    },
-    "project": {
-      "$ref": "#/definitions/Project"
-    }
-  },
-  "definitions": {
-    "Account": {
+    "fork_repo_name": {
       "type": [
         "null",
-        "object"
-      ],
-      "properties": {
-        "uuid": {
-          "type": [
-            "string"
-          ]
-        },
-        "username": {
-          "type": [
-            "null",
-            "string"
-          ]
-        },
-        "display_name": {
-          "type": [
-            "null",
-            "string"
-          ]
-        },
-        "created_on": {
-          "type": [
-            "null",
-            "string"
-          ],
-          "format": "date-time"
-        }
-      }
-    },
-    "Branch": {
-      "type": [
-        "null",
-        "object"
-      ],
-      "properties": {
-        "name": {
-          "type": [
-            "string"
-          ]
-        }
-      }
-    },
-    "Project": {
-      "type": [
-        "null",
-        "object"
-      ],
-      "properties": {
-        "uuid": {
-          "type": [
-            "string"
-          ]
-        },
-        "key": {
-          "type": [
-            "null",
-            "string"
-          ]
-        },
-        "name": {
-          "type": [
-            "null",
-            "string"
-          ]
-        }
-      }
+        "string"
+      ]
     }
   }
 }

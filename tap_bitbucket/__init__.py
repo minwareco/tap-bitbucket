@@ -14,6 +14,8 @@ import singer
 import singer.bookmarks as bookmarks
 import singer.metrics as metrics
 import difflib
+import urllib.parse
+
 
 from .gitlocal import GitLocal
 
@@ -27,12 +29,11 @@ repo_cache = {}
 REQUIRED_CONFIG_KEYS = ['start_date', 'user_name', 'access_token', 'repository']
 
 KEY_PROPERTIES = {
-    'commits': ['commitId'], # This is the SHA
-    'pull_requests': ['artifactId'],
-    'pull_request_threads': ['id'],
+    'commits': ['id'],
+    'pull_requests': ['id'],
     'refs': ['ref'],
     'commit_files': ['id'],
-    'repositories': ['uuid'],
+    'repositories': ['id'],
 }
 
 API_VESION = "6.0"
@@ -169,6 +170,7 @@ def get_orgs():
     ):
         memberships = response.json()['values']
         for membership in memberships:
+            logger.info("membership = {}".format(json.dumps(membership, indent = 4)))
             orgs.append(membership['workspace']['slug'])
 
     return orgs
@@ -187,6 +189,16 @@ def get_repos_for_org(org):
 
     return orgRepos
 
+repo_cache = {}
+def get_repo_metadata(repo_path):
+    if not repo_path in repo_cache:
+        response = authed_get(
+            'repositories',
+            'https://api.bitbucket.org/2.0/repositories/{}'.format(repo_path)
+        )
+        repo_cache[repo_path] = response.json()
+    return repo_cache[repo_path]
+
 def set_auth_headers(config, org = None):
     # TODO: support BitBucket app token
 
@@ -197,11 +209,12 @@ def set_auth_headers(config, org = None):
 
 # pylint: disable=dangerous-default-value
 def authed_get(source, url, headers={}):
+    logger.info("authed_get URL = {}".format(url))
     with metrics.http_request_timer(source) as timer:
         response = None
         retryCount = 0
         maxRetries = 3
-        while retryCount < maxRetries:
+        while response is None and retryCount < maxRetries:
             session.headers.update(headers)
             # Uncomment for debugging
             #logger.info("requesting {}".format(url))
@@ -370,14 +383,8 @@ def write_commit_detail(org, project, project_repo, commit, schema, mdata, extra
         rec = transformer.transform(commit, schema, metadata=metadata.to_map(mdata))
     singer.write_record('commits', rec, time_extracted=extraction_time)
 
-def get_all_commits(schema, repo_path, state, mdata, start_date):
-    '''
-    https://docs.microsoft.com/en-us/rest/api/azure/devops/git/commits/get-commits?view=azure-devops-rest-6.0#gitcommitref
-
-    Note: the change array looks like it is only included if the query has one result. So, it will
-    nee to be fetched with commits/changes in a separate request in most cases.
-    '''
-    # This will only be use if it's our first run and we don't have any fetchedCommits. See below.
+def sync_all_commits(schema, repo_path, state, mdata, start_date):
+    # This will only be used if it's our first run and we don't have any fetchedCommits. See below.
     bookmark = get_bookmark(state, repo_path, "commits", "since", start_date)
     if not bookmark:
         bookmark = '1970-01-01'
@@ -392,58 +399,39 @@ def get_all_commits(schema, repo_path, state, mdata, start_date):
         # to the beginning of time and rely solely on the fetchedCommits bookmark.
         bookmark = '1970-01-01'
 
-    # We don't want newly fetched commits to update the state if we fail partway through, because
-    # this could lead to commits getting marked as fetched when their parents are never fetched. So,
-    # copy the dict.
-    fetchedCommits = fetchedCommits.copy()
     # Maintain a list of parents we are waiting to see
     missingParents = {}
 
     with metrics.record_counter('commits') as counter:
         extraction_time = singer.utils.now()
-        iterate_state = {'not': 'empty'}
-        count = 1
-        while True:
-            count += 1
-            response = authed_get_all_pages(
-                'commits',
-                "https://api.bitbucket.org/2.0/repositories/{}/commits?" \
-                "api-version={}&searchCriteria.fromDate={}" \
-                .format(repo_path, API_VESION, bookmark),
-                'searchCriteria.$top',
-                'searchCriteria.$skip',
-                iterate_state=iterate_state
-            )
-
-            commits = list(response)[0].json()
-            for commit in commits['value']:
+        for response in  authed_get_all_pages(
+            'commits',
+            "https://api.bitbucket.org/2.0/repositories/{}/commits?".format(repo_path),
+        ):
+            commits = response.json()['values']
+            for commit in commits:
                 # Skip commits we've already imported
-                if commit['commitId'] in fetchedCommits:
+                if commit['hash'] in fetchedCommits:
                     continue
-                # Will also populate the 'parents' sha list
-                write_commit_detail(org, project, project_repo, commit, schema, mdata, extraction_time)
+                commit['_sdc_repository'] = repo_path
+                commit['id'] = '{}/{}'.format(repo_path, commit['hash'])
+                with singer.Transformer() as transformer:
+                    rec = transformer.transform(commit, schema, metadata=metadata.to_map(mdata))
+                singer.write_record('commits', rec, time_extracted=extraction_time)
 
                 # Record that we have now fetched this commit
-                fetchedCommits[commit['commitId']] = 1
+                fetchedCommits[commit['hash']] = 1
                 # No longer a missing parent
-                missingParents.pop(commit['commitId'], None)
+                missingParents.pop(commit['hash'], None)
 
                 # Keep track of new missing parents
                 for parent in commit['parents']:
-                    if not parent in fetchedCommits:
-                        missingParents[parent] = 1
-
+                    if not parent['hash'] in fetchedCommits:
+                        missingParents[parent['hash']] = 1
                 counter.increment()
 
-            # If there are no missing parents, then we are done prior to reaching the lst page
-            if not missingParents:
-                break
-            # Else if we have reached the end of our data but not found the parents, then we have a
-            # problem
-            elif iterate_state['stop']:
-                raise BitBucketException('Some commit parents never found: ' + \
-                    ','.join(missingParents.keys()))
-            # Otherwise, proceed to fetch the next page with the next iteration state
+    if len(missingParents) > 0:
+        raise BitBucketException('Some commit parents never found: ' + ', '.join(missingParents.keys()))
 
     # Don't write until the end so that we don't record fetchedCommits if we fail and never get
     # their parents.
@@ -534,7 +522,7 @@ def get_all_heads_for_commits(repo_path):
     return head_set
     '''
 
-def get_all_commit_files(schemas, repo_path, state, mdata, start_date, gitLocal, heads):
+def sync_all_commit_files(schemas, repo_path, state, mdata, start_date, gitLocal, heads):
     bookmark = get_bookmark(state, repo_path, "commit_files", "since", start_date)
     if not bookmark:
         bookmark = '1970-01-01'
@@ -693,34 +681,6 @@ def get_all_commit_files(schemas, repo_path, state, mdata, start_date, gitLocal,
     return state
 
 
-def get_threads_for_pr(prid, schema, org, repo_path, state, mdata):
-    '''
-    https://docs.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/pull-request-threads-list?view=azure-devops-rest-6.0
-
-    WARNING: This API has no paging support whatsoever, so hope that there aren't any limits.
-    '''
-    reposplit = repo_path.split('/')
-    project = reposplit[0]
-    project_repo = reposplit[1]
-
-    for response in authed_get_all_pages(
-            'pull_request_threads',
-            "https://dev.azure.com/{}/{}/_apis/git/repositories/{}/pullrequests/{}/threads?" \
-            "api-version={}" \
-            .format(org, project, project_repo, prid, API_VESION)
-    ):
-        threads = response.json()
-        for thread in threads['value']:
-            thread['_sdc_repository'] = "{}/{}/_git/{}".format(org, project, project_repo)
-            thread['_sdc_pullRequestId'] = prid
-            with singer.Transformer() as transformer:
-                rec = transformer.transform(thread, schema, metadata=metadata.to_map(mdata))
-            yield rec
-
-        # I'm honestly not sure what the purpose is of this, but it was in the github tap
-        return state
-
-
 def get_pull_request_heads(org, repo_path):
     reposplit = repo_path.split('/')
     project = reposplit[0]
@@ -745,16 +705,7 @@ def get_pull_request_heads(org, repo_path):
                 heads['refs/pull/{}/merge'.format(prNumber)] = pr['lastMergeCommit']['commitId']
     return heads
 
-def get_all_pull_requests(schemas, org, repo_path, state, mdata, start_date):
-    '''
-    https://docs.microsoft.com/en-us/rest/api/azure/devops/git/pull-requests/pull-requests-get-pull-requests?view=azure-devops-rest-6.1
-
-    Note: commits will need to be fetched separately in a request to list PR commits
-    '''
-    reposplit = repo_path.split('/')
-    project = reposplit[0]
-    project_repo = reposplit[1]
-
+def sync_all_pull_requests(schemas, org, repo_path, state, mdata, start_date):
     bookmark = get_bookmark(state, repo_path, "pull_requests", "since", start_date)
     if not bookmark:
         bookmark = '1970-01-01'
@@ -765,124 +716,102 @@ def get_all_pull_requests(schemas, org, repo_path, state, mdata, start_date):
     with metrics.record_counter('pull_requests') as counter:
         extraction_time = singer.utils.now()
         for response in authed_get_all_pages(
-                'pull_requests',
-                "https://dev.azure.com/{}/{}/_apis/git/repositories/{}/pullrequests?" \
-                "api-version={}&searchCriteria.status=all" \
-                .format(org, project, project_repo, API_VESION),
-                '$top',
-                '$skip',
-                True # No link header to indicate availability of more data
+            'pull_requests',
+            'https://api.bitbucket.org/2.0/repositories/{}/pullrequests?'.format(repo_path) + \
+                'state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'
         ):
-            prs = response.json()['value']
+            prs = response.json()['values']
             for pr in prs:
-                # Since there is no fromDate parameter in the API, just filter out PRs that have been
-                # closed prior to the the starting time
-                if 'closedDate' in pr and parser.parse(pr['closedDate']) < bookmarkTime:
+                # Since there is no "fromDate" like parameter in the API, just filter out PRs that have not
+                # been updated since the the starting time
+                updated_on = pr.get('updated_on')
+                if updated_on is not None and len(updated_on) > 0 and parser.parse(updated_on) < bookmarkTime:
                     continue
 
-                prid = pr['pullRequestId']
-
-                # List the PR commits to include those
-                pr['commits'] = []
-                for pr_commit_response in authed_get_all_pages(
-                        'pull_requests/commits',
-                        "https://dev.azure.com/{}/{}/_apis/git/repositories/{}/pullrequests/{}/commits?" \
-                        "api-version={}" \
-                        .format(org, project, project_repo, prid, API_VESION),
-                        '$top',
-                        'continuationToken'
-                ):
-                    pr_commits = pr_commit_response.json()
-                    pr['commits'].extend(pr_commits['value'])
-
-                    # Note: These commits will already have their detail fetched by the commits
-                    # endpoint (even if they are in an unmerged PR or abandoned), so we don't need
-                    # to fetch more info here -- we only need to provide the shallow references.
-
-                # Write out the pull request info
-
-                pr['_sdc_repository'] = "{}/{}/_git/{}".format(org, project, project_repo)
-
-                # So pullRequestId isn't actually unique. There is a 'artifactId' parameter that is
-                # unique, but, surprise surprise, the API doesn't actually include this property
-                # when listing multiple PRs, so we need to construct it from the URL. Hilariously,
-                # this ID also contains %2f for the later slashes instead of actual slashes.
-                # Get the project_id and repo_id from the URL
-                # TODO: not sure what type of exception to throw here if if the url isn't present
-                # and matching this format.
-                url_search = re.search('dev\\.azure\\.com/\w+/([-\w]+)/_apis/git/repositories/([-\w]+)', pr['url'])
-                project_id = url_search.group(1)
-                repo_id = url_search.group(2)
-                pr['artifactId'] = "vstfs:///Git/PullRequestId/{}%2f{}%2f{}" \
-                    .format(project_id, repo_id, prid)
+                pr['_sdc_repository'] = repo_path
+                pr['number'] = pr['id'] # e.g. 1, 13, 65
+                pr['id'] = '{}/{}'.format(repo_path, pr['number'])
 
                 with singer.Transformer() as transformer:
                     rec = transformer.transform(pr, schemas['pull_requests'], metadata=metadata.to_map(mdata))
                 singer.write_record('pull_requests', rec, time_extracted=extraction_time)
-                singer.write_bookmark(state, repo_path, 'pull_requests', {'since': singer.utils.strftime(extraction_time)})
                 counter.increment()
 
-                # sync pull_request_threads if that schema is present
-                if schemas.get('pull_request_threads'):
-                    for thread_rec in get_threads_for_pr(prid, schemas['pull_request_threads'], org, repo_path, state, mdata):
-                        singer.write_record('pull_request_threads', thread_rec, time_extracted=extraction_time)
-                        singer.write_bookmark(state, repo_path, 'pull_request_threads', {'since': singer.utils.strftime(extraction_time)})
+                if schemas.get('pull_request_comments'):
+                    sync_all_pull_request_comments(schemas, org, repo_path, pr['id'], pr['number'], state, mdata, start_date)
+
+    singer.write_bookmark(state, repo_path, 'pull_requests', {
+        'since': singer.utils.strftime(extraction_time)
+    })
 
     return state
 
-def get_all_repositories(schema, org, repo_path, state, mdata, start_date):
-    # Don't bookmark this one for now
-    
-    with metrics.record_counter('pull_requests') as counter:
-        extraction_time = singer.utils.now()
+def sync_all_pull_request_comments(schemas, org, repo_path, pr_id, pr_number, state, mdata, start_date):
+    # bookmark data is keyed by pr ID, and the value is the date/time of the most recent successful ingest
+    bookmark = get_bookmark(state, repo_path, "pull_request_comments", pr_id, start_date)
+    if not bookmark:
+        bookmark = '1970-01-01'
+    bookmarkTime = parser.parse(bookmark)
+    if bookmarkTime.tzinfo is None:
+        bookmarkTime = pytz.UTC.localize(bookmarkTime)
 
+    with metrics.record_counter('pull_request_comments') as counter:
+        extraction_time = singer.utils.now()
+        query = urllib.parse.quote('created_on>{}'.format(bookmarkTime.isoformat()))
         for response in authed_get_all_pages(
-            'repositories',
-            "/2.0/repositories/{workspace}".format(org, API_VESION),
-            '$top',
-            '$skip',
-            True # No link header to indicate availability of more data
+            'pull_request_comments',
+            'https://api.bitbucket.org/2.0/repositories/{}/pullrequests/{}/comments?'.format(repo_path, pr_number) + \
+                'q={}'.format(query)
         ):
-            projects = response.json()['value']
-            for project in projects:
-                projectName = project['name']
-                for response in authed_get_all_pages(
-                    'repositories',
-                    "https://dev.azure.com/{}/{}/_apis/git/repositories?" \
-                    "api-version={}" \
-                    .format(org, projectName, API_VESION),
-                    '$top',
-                    '$skip',
-                    True # No link header to indicate availability of more data
-                ):
-                    repos = response.json()['value']
-                    for repo in repos:
-                        repoName = repo['name']
-                        repo['_sdc_repository'] = '{}/{}/_git/{}'.format(org, projectName, repoName)
-                        
-                        with singer.Transformer() as transformer:
-                            rec = transformer.transform(repo, schema,
-                                metadata=metadata.to_map(mdata))
-                        singer.write_record('repositories', rec, time_extracted=extraction_time)
-                        counter.increment()
+            comments = response.json()['values']
+            for comment in comments:
+                comment['_sdc_repository'] = repo_path
+                comment['id'] = '{}/{}'.format(pr_id, comment['id'])
+                comment['pr_id'] = pr_id
+                
+                parent = comment.get('parent')
+                if parent:
+                    parent['id'] = '{}/{}'.format(pr_id, parent['id'])
+
+                with singer.Transformer() as transformer:
+                    rec = transformer.transform(comment, schemas['pull_request_comments'], metadata=metadata.to_map(mdata))
+                singer.write_record('pull_request_comments', rec, time_extracted=extraction_time)
+                counter.increment()
+
+    singer.write_bookmark(state, repo_path, 'pull_request_comments', {
+        pr_id: singer.utils.strftime(extraction_time)
+    })
+
+    return state
+
+def sync_all_repositories(schema, repo_path, state, mdata, _start_date):
+    repo_metadata = get_repo_metadata(repo_path)
+
+    with metrics.record_counter('repositories') as counter:
+        extraction_time = singer.utils.now()
+        repo = {}
+        repo['id'] = 'bitbucket:' + repo_path
+        repo['source'] = 'bitbucket'
+        repo['org_name'] = repo_path.split('/')[0]
+        repo['repo_name'] = repo_path.split('/')[1]
+        repo['is_source_public'] = repo_metadata['is_private'] == False
+        repo['fork_org_name'] = None # TODO: make `forks` API call to get this
+        repo['fork_repo_name'] = None # TODO: make `forks` API call to get this
+        repo['description'] = repo_metadata['description']
+        with singer.Transformer() as transformer:
+            rec = transformer.transform(repo, schema, metadata=metadata.to_map(mdata))
+        singer.write_record('repositories', rec, time_extracted=extraction_time)
+        counter.increment()
     return state
 
 def get_selected_streams(catalog):
     '''
-    Gets selected streams.  Checks schema's 'selected'
-    first -- and then checks metadata, looking for an empty
-    breadcrumb and mdata with a 'selected' entry
+    Gets selected streams based on the 'selected' property.
     '''
     selected_streams = []
     for stream in catalog['streams']:
-        stream_metadata = stream['metadata']
         if stream['schema'].get('selected', False):
             selected_streams.append(stream['tap_stream_id'])
-        else:
-            for entry in stream_metadata:
-                # stream metadata will have empty breadcrumb
-                if not entry['breadcrumb'] and entry['metadata'].get('selected',None):
-                    selected_streams.append(stream['tap_stream_id'])
 
     return selected_streams
 
@@ -893,14 +822,14 @@ def get_stream_from_catalog(stream_id, catalog):
     return None
 
 SYNC_FUNCTIONS = {
-    'commits': get_all_commits,
-    'commit_files': get_all_commit_files,
-    'pull_requests': get_all_pull_requests,
-    'repositories': get_all_repositories,
+    'commits': sync_all_commits,
+    'commit_files': sync_all_commit_files,
+    'pull_requests': sync_all_pull_requests,
+    'repositories': sync_all_repositories,
 }
 
 SUB_STREAMS = {
-    'pull_requests': ['pull_request_threads'],
+    'pull_requests': ['pull_request_comments'],
     'commit_files': ['refs']
 }
 
@@ -950,7 +879,6 @@ def do_sync(config, state, catalog):
     #pylint: disable=too-many-nested-blocks
     for repo in allRepos:
         logger.info("Starting sync of repository: %s", repo)
-        continue
 
         org = repo.split('/')[0]
         access_token = set_auth_headers(config, org)
@@ -967,12 +895,6 @@ def do_sync(config, state, catalog):
             stream_id = stream['tap_stream_id']
             stream_schema = stream['schema']
             mdata = stream['metadata']
-
-            if stream_id == 'repositories':
-                # Only load this once, and only if process_globals is set to true
-                if processed_repositories or not process_globals:
-                    continue
-                processed_repositories = True
 
             # if it is a "sub_stream", it will be sync'd by its parent
             if not SYNC_FUNCTIONS.get(stream_id):

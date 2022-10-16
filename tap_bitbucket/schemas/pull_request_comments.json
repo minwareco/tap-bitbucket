@@ -1,0 +1,109 @@
+{
+  "type": ["null", "object"],
+  "additionalProperties": false,
+  "properties": {
+    "_sdc_repository": {
+      "type": ["string"]
+    },
+    "id": {
+      "type": [
+        "null",
+        "string"
+      ],
+      "description": "A unique ID built as {org}/{repository}/{pr_number}/{comment_number}."
+    },
+    "pr_id": {
+      "type": [
+        "string"
+      ],
+      "description": "A unique ID for the PR built as {org}/{repository}/{pr_number}."
+    },
+    "created_on": {
+      "type": ["null", "string"],
+      "description": "",
+      "format": "date-time"
+    },
+    "updated_on": {
+      "type": ["null", "string"],
+      "description": "",
+      "format": "date-time"
+    },
+    "content": {
+      "type": ["null", "object"],
+      "description": "",
+      "properties": {
+        "raw": {
+          "type": ["null", "string"],
+          "description": "The text as it was typed by a user."
+        },
+        "html": {
+          "type": ["null", "string"],
+          "description": "The user's content rendered as HTML."
+        }
+      }
+    },
+    "user": {
+      "$ref": "#/definitions/Account"
+    },
+    "deleted": {
+      "type": ["null", "boolean"],
+      "description": ""
+    },
+    "parent": {
+      "type": ["null", "object"],
+      "description": "",
+      "properties": {
+        "id": {
+          "type": ["null", "string"],
+          "description": "A unique ID of the parent comment (if any) built as {org}/{repository}/{pr_number}/{comment_number}."
+        }
+      }
+    },
+    "inline": {
+      "type": ["null", "object"],
+      "description": "",
+      "properties": {
+        "from": {
+          "type": ["null", "integer"],
+          "description": "The comment's anchor line in the old version of the file."
+        },
+        "to": {
+          "type": ["null", "integer"],
+          "description": "The comment's anchor line in the new version of the file. If the 'from' line is also provided, this value will be removed."
+        },
+        "path": {
+          "type": ["null", "string"],
+          "description": "The path of the file this comment is anchored to."
+        }
+      }
+    }
+  },
+  "definitions": {
+    "Account": {
+      "type": ["null", "object"],
+      "additionalProperties": false,
+      "properties": {
+        "uuid": {
+          "type": [
+            "string"
+          ],
+          "description": ""
+        },
+        "username": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "description": ""
+        },
+        "display_name": {
+          "type": [
+            "null",
+            "string"
+          ],
+          "description": ""
+        }
+      }
+    }
+  }
+}
