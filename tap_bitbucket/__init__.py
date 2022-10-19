@@ -468,7 +468,7 @@ async def getChangedfilesForCommits(commits, gitLocalRepoPath, gitLocal):
     results = await asyncio.gather(*coros)
     return results
 
-def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal):
+def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal, heads):
     bookmark = get_bookmark(state, repo_path, "commit_files", "since", start_date)
     if not bookmark:
         bookmark = '1970-01-01'
@@ -491,8 +491,10 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
     fetchedCommits = fetchedCommits.copy()
 
     # Get all of the branch heads to use for querying commits
-    heads = gitLocal.getAllHeads(repo_path)
-    logger.info(' '.join(heads));
+    localHeads = gitLocal.getAllHeads(repo_path)
+    for k in heads:
+        localHeads[k] = heads[k]
+    heads = localHeads
 
     # Set this here for updating the state when we don't run any queries
     extraction_time = singer.utils.now()
@@ -621,28 +623,19 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
 
     return state
 
-def get_pull_request_heads(org, repo_path):
-    reposplit = repo_path.split('/')
-    project = reposplit[0]
-    project_repo = reposplit[1]
-    
+def get_pull_request_heads(repo_path):
     heads = {}
-
     for response in authed_get_all_pages(
-            'pull_requests',
-            "https://dev.azure.com/{}/{}/_apis/git/repositories/{}/pullrequests?" \
-            "api-version={}&searchCriteria.status=all" \
-            .format(org, project, project_repo, API_VESION),
-            '$top',
-            '$skip',
-            True # No link header to indicate availability of more data
+        'pull_requests',
+        'https://api.bitbucket.org/2.0/repositories/{}/pullrequests?'.format(repo_path) + \
+            'state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'
     ):
-        prs = response.json()['value']
+        prs = response.json()['values']
         for pr in prs:
-            prNumber = pr['pullRequestId']
-            heads['refs/pull/{}/head'.format(prNumber)] = pr['lastMergeSourceCommit']['commitId']
-            if pr.get('lastMergeCommit'):
-                heads['refs/pull/{}/merge'.format(prNumber)] = pr['lastMergeCommit']['commitId']
+            prNumber = pr['id']
+            heads['refs/pull/{}/head'.format(prNumber)] = pr['source']['commit']['hash']
+            if pr.get('merge_commit'):
+                heads['refs/pull/{}/merge'.format(prNumber)] = pr['merge_commit']['hash']
     return heads
 
 def normalize_pull_request_endpoint(endpoint):
@@ -868,11 +861,11 @@ def do_sync(config, state, catalog):
 
                     # sync stream and its sub streams
                     if stream_id == 'commit_files':
-                        # heads = get_pull_request_heads(org, repo)
+                        heads = get_pull_request_heads(repo)
                         # We don't need to also get open branch heads here becuase those are
                         # included in the git clone --mirror, though PR heads for merged PRs are
                         # not included.
-                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal)
+                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads)
                     else:
                         state = sync_func(stream_schemas, org, repo, state, mdata, start_date)
 
