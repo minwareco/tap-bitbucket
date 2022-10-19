@@ -1,6 +1,5 @@
 {
   "type": ["null", "object"],
-  "additionalProperties": false,
   "properties": {
     "_sdc_repository": {
       "type": ["string"],
@@ -19,8 +18,22 @@
       "description": ""
     },
     "summary": {
-      "type": ["null", "string"],
-      "description": ""
+      "type": ["null", "object"],
+      "description": "",
+      "properties": {
+        "raw": {
+          "type": ["null", "string"],
+          "description": "The text as it was typed by a user."
+        },
+        "markup": {
+          "type": ["null", "string"],
+          "description": "The type of markup language the raw content is to be interpreted in. One of markdown, creole, plaintext."
+        },
+        "html": {
+          "type": ["null", "string"],
+          "description": "The user's content rendered as HTML."
+        }
+      }
     },
     "state": {
       "type": ["null", "string"],
@@ -92,7 +105,6 @@
   "definitions": {
     "Account": {
       "type": ["null", "object"],
-      "additionalProperties": false,
       "properties": {
         "uuid": {
           "type": [
@@ -118,7 +130,6 @@
     },
     "Participant": {
       "type": ["null", "object"],
-      "additionalProperties": false,
       "properties": {
         "user": {
           "$ref": "#/definitions/Account"
@@ -153,7 +164,6 @@
     },
     "PullRequestEndpoint": {
       "type": ["null", "object"],
-      "additionalProperties": false,
       "properties": {
         "branch": {
           "type": [
@@ -174,7 +184,6 @@
             "null",
             "object"
           ],
-          "additionalProperties": false,
           "description": "",
           "properties": {
             "uuid": {

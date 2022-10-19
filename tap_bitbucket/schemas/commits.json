@@ -1,6 +1,5 @@
 {
   "type": ["null", "object"],
-  "additionalProperties": false,
   "properties": {
     "_sdc_repository": {
       "type": ["null", "string"]
@@ -29,7 +28,6 @@
       "type": ["null", "array"],
       "items": {
         "type": ["null", "object"],
-        "additionalProperties": false,
         "properties": {
           "hash": {
             "type": ["null", "string"],
@@ -42,7 +40,6 @@
   "definitions": {
     "Author": {
       "type": ["null", "object"],
-      "additionalProperties": false,
       "properties": {
         "raw": {
           "type": [

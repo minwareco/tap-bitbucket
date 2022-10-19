@@ -1,7 +1,7 @@
 import argparse
 import os
 import json
-import collections
+import copy
 import time
 from dateutil import parser
 import pytz
@@ -30,9 +30,10 @@ REQUIRED_CONFIG_KEYS = ['start_date', 'user_name', 'access_token', 'repository']
 
 KEY_PROPERTIES = {
     'commits': ['id'],
-    'pull_requests': ['id'],
-    'refs': ['ref'],
     'commit_files': ['id'],
+    'pull_requests': ['id'],
+    'pull_request_comments': ['id'],
+    'refs': ['ref'],
     'repositories': ['id'],
 }
 
@@ -467,62 +468,7 @@ async def getChangedfilesForCommits(commits, gitLocalRepoPath, gitLocal):
     results = await asyncio.gather(*coros)
     return results
 
-def get_all_heads_for_commits(repo_path):
-    # TODO: implement this for like we did for gitlab
-    '''
-    Gets a list of all SHAs to use as heads for importing lists of commits. Includes all branches
-    and PRs (both base and head) as well as the main branch to get all potential starting points.
-
-    default_branch_name = get_repo_metadata(repo_path)['default_branch']
-
-    # If this data has already been populated with get_all_branches, don't duplicate the work.
-    if not repo_path in BRANCH_CACHE:
-        cur_cache = {}
-        BRANCH_CACHE[repo_path] = cur_cache
-        for response in authed_get_all_pages(
-            'branches',
-            'https://api.github.com/repos/{}/branches?per_page=100'.format(repo_path)
-        ):
-            branches = response.json()
-            for branch in branches:
-                isdefault = branch['name'] == default_branch_name
-                cur_cache[branch['name']] = {
-                    'sha': branch['commit']['sha'],
-                    'isdefault': isdefault,
-                    'name': branch['name']
-                }
-
-    if not repo_path in PR_CACHE:
-        cur_cache = {}
-        PR_CACHE[repo_path] = cur_cache
-        for response in authed_get_all_pages(
-            'pull_requests',
-            'https://api.github.com/repos/{}/pulls?per_page=100&state=all'.format(repo_path)
-        ):
-            pull_requests = response.json()
-            for pr in pull_requests:
-                pr_num = pr.get('number')
-                cur_cache[str(pr_num)] = {
-                    'pr_num': str(pr_num),
-                    'base_sha': pr['base']['sha'],
-                    'base_ref': pr['base']['ref'],
-                    'head_sha': pr['head']['sha'],
-                    'head_ref': pr['head']['ref']
-                }
-
-    # Now build a set of all potential heads
-    head_set = {}
-    for key, val in BRANCH_CACHE[repo_path].items():
-        head_set[val['sha']] = 'refs/heads/' + val['name']
-    for key, val in PR_CACHE[repo_path].items():
-        head_set[val['head_sha']] = 'refs/pull/' + val['pr_num'] + '/head'
-        # There could be a PR into a branch that has since been deleted and this is our only record
-        # of its head, so include it
-        head_set[val['base_sha']] = 'refs/heads/' + val['base_ref']
-    return head_set
-    '''
-
-def sync_all_commit_files(schemas, repo_path, state, mdata, start_date, gitLocal, heads):
+def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal):
     bookmark = get_bookmark(state, repo_path, "commit_files", "since", start_date)
     if not bookmark:
         bookmark = '1970-01-01'
@@ -545,12 +491,8 @@ def sync_all_commit_files(schemas, repo_path, state, mdata, start_date, gitLocal
     fetchedCommits = fetchedCommits.copy()
 
     # Get all of the branch heads to use for querying commits
-    #heads = get_all_heads_for_commits(repo_path)
-    # TODO: get this from syncing branches, similar to gitlab?
-    localHeads = gitLocal.getAllHeads(repo_path)
-    for k in heads:
-        localHeads[k] = heads[k]
-    heads = localHeads
+    heads = gitLocal.getAllHeads(repo_path)
+    logger.info(' '.join(heads));
 
     # Set this here for updating the state when we don't run any queries
     extraction_time = singer.utils.now()
@@ -573,7 +515,7 @@ def sync_all_commit_files(schemas, repo_path, state, mdata, start_date, gitLocal
             # Emit the ref record as well if it's not for a pull request
             if not ('refs/pull' in headRef):
                 refRecord = {
-                    '_sdc_repository': gitLocalRepoPath,
+                    '_sdc_repository': repo_path,
                     'ref': headRef,
                     'sha': headSha
                 }
@@ -591,18 +533,17 @@ def sync_all_commit_files(schemas, repo_path, state, mdata, start_date, gitLocal
             missingParents = {}
 
             # Verify that this commit exists in our mirrored repo
-            commitHasLocal = gitLocal.hasLocalCommit(gitLocalRepoPath, headSha)
+            commitHasLocal = gitLocal.hasLocalCommit(repo_path, headSha)
             if not commitHasLocal:
-                logger.warning('MISSING REF/COMMIT {}/{}/{}'.format(gitLocalRepoPath, headRef,
-                    headSha))
+                logger.warning('MISSING REF/COMMIT {}/{}/{}'.format(repo_path, headRef, headSha))
                 # Skip this now that we're mirroring everything. We shouldn't have anything that's
-                # missing from github's API
+                # missing from BitBucket's API
                 continue
 
 
             offset = 0
             while True:
-                commits = gitLocal.getCommitsFromHead(gitLocalRepoPath, headSha, limit = LOG_PAGE_SIZE,
+                commits = gitLocal.getCommitsFromHead(repo_path, headSha, limit = LOG_PAGE_SIZE,
                     offset = offset)
 
                 extraction_time = singer.utils.now()
@@ -652,7 +593,7 @@ def sync_all_commit_files(schemas, repo_path, state, mdata, start_date, gitLocal
             # Slice off the queue to avoid memory leaks
             curQ = commitQ[0:BATCH_SIZE]
             commitQ = commitQ[BATCH_SIZE:]
-            changedFileList = asyncio.run(getChangedfilesForCommits(curQ, gitLocalRepoPath, gitLocal))
+            changedFileList = asyncio.run(getChangedfilesForCommits(curQ, repo_path, gitLocal))
             for commitfiles in changedFileList:
                 with singer.Transformer() as transformer:
                     rec = transformer.transform(commitfiles, schemas['commit_files'],
@@ -680,7 +621,6 @@ def sync_all_commit_files(schemas, repo_path, state, mdata, start_date, gitLocal
 
     return state
 
-
 def get_pull_request_heads(org, repo_path):
     reposplit = repo_path.split('/')
     project = reposplit[0]
@@ -704,6 +644,14 @@ def get_pull_request_heads(org, repo_path):
             if pr.get('lastMergeCommit'):
                 heads['refs/pull/{}/merge'.format(prNumber)] = pr['lastMergeCommit']['commitId']
     return heads
+
+def normalize_pull_request_endpoint(endpoint):
+    result = {
+        "branch": endpoint['branch']['name'],
+        "commit_hash": endpoint['commit']['hash'],
+        "repository": endpoint['repository'] # no transform done
+    }
+    return result
 
 def sync_all_pull_requests(schemas, org, repo_path, state, mdata, start_date):
     bookmark = get_bookmark(state, repo_path, "pull_requests", "since", start_date)
@@ -731,6 +679,8 @@ def sync_all_pull_requests(schemas, org, repo_path, state, mdata, start_date):
                 pr['_sdc_repository'] = repo_path
                 pr['number'] = pr['id'] # e.g. 1, 13, 65
                 pr['id'] = '{}/{}'.format(repo_path, pr['number'])
+                pr['source'] = normalize_pull_request_endpoint(pr['source'])
+                pr['destination'] = normalize_pull_request_endpoint(pr['destination'])
 
                 with singer.Transformer() as transformer:
                     rec = transformer.transform(pr, schemas['pull_requests'], metadata=metadata.to_map(mdata))
@@ -849,7 +799,7 @@ def do_sync(config, state, catalog):
     if config['repository'] == '*/*':
         if not config['access_token'] or len(config['access_token']) == 0:
             raise Exception('Cannot use org wildcard without a PAT (access_token).')
-        access_token = set_auth_headers(config)
+        # set_auth_headers(config)
         repositories = list()
         orgs = get_orgs()
         for org in orgs:
@@ -863,15 +813,16 @@ def do_sync(config, state, catalog):
         repoSplit = repo.split('/')
         if repoSplit[1] == '*':
             org = repoSplit[0]
-            access_token = set_auth_headers(config, org)
+            # set_auth_headers(config, org)
             orgRepos = get_repos_for_org(repoSplit[0])
             allRepos.extend(orgRepos)
         else:
             allRepos.append(repo)
 
+    # access_token = set_auth_headers(config, org)
     domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
     gitLocal = GitLocal({
-        'access_token': config['access_token'],
+        'access_token': "{}:{}".format(config['user_name'], config['access_token']),
         'workingDir': '/tmp',
     }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
         config['hmac_token'] if 'hmac_token' in config else None)
@@ -881,15 +832,6 @@ def do_sync(config, state, catalog):
         logger.info("Starting sync of repository: %s", repo)
 
         org = repo.split('/')[0]
-        access_token = set_auth_headers(config, org)
-
-        gitLocal = GitLocal({
-            'access_token': access_token,
-            'workingDir': '/tmp'
-            },
-            'https://x-access-token:{}@bitbucket.org/{}.git',
-            config['hmac_token'] if 'hmac_token' in config else None
-        )
         
         for stream in catalog['streams']:
             stream_id = stream['tap_stream_id']
@@ -926,12 +868,11 @@ def do_sync(config, state, catalog):
 
                     # sync stream and its sub streams
                     if stream_id == 'commit_files':
-                        heads = get_pull_request_heads(org, repo)
+                        # heads = get_pull_request_heads(org, repo)
                         # We don't need to also get open branch heads here becuase those are
                         # included in the git clone --mirror, though PR heads for merged PRs are
                         # not included.
-                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date,
-                            gitLocal, heads)
+                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal)
                     else:
                         state = sync_func(stream_schemas, org, repo, state, mdata, start_date)
 

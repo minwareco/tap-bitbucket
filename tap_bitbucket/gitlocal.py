@@ -239,7 +239,7 @@ class GitLocal:
     sepTok = 'xsep4983782x'
     params = ['git', 'log', '--pretty={}{}'.format(
       startTok,
-      sepTok.join(['%H','%T','%P','%an','%ae','%ai','%cn','%ce','%ci','%B'])
+      sepTok.join(['%H','%T','%P','%an','%ae','%aI','%cn','%ce','%cI','%B'])
     )]
     if limit:
       params.append('-n{}'.format(int(limit)))
