@@ -339,22 +339,11 @@ def verify_repo_access(url_for_repo, repo, config):
         raise NotFoundException(message) from None
 
 def verify_access_for_repo(config):
-    org = config['org']
-    per_page = 1
-    page = 1
-
     repositories = list(filter(None, config['repository'].split(' ')))
 
     for repo in repositories:
         logger.info("Verifying access of repository: %s", repo)
-        reposplit = repo.split('/')
-        project = reposplit[0]
-        project_repo = reposplit[1]
-
-        # https://dev.azure.com/${ORG}/${PROJECTNAME}/_apis/git/repositories/${REPONAME}/commits?searchCriteria.\$top=${PAGESIZE}\&searchCriteria.\$skip=${SKIP}\&api-version=${APIVERSION}
-        url_for_repo = "https://dev.azure.com/{}/{}/_apis/git/repositories/{}/commits?" \
-            "searchCriteria.$top={}&searchCriteria.$skip={}&api-version={}" \
-            .format(org, project, project_repo, per_page, page - 1, API_VESION)
+        url_for_repo = "https://api.bitbucket.org/2.0/repositories/{}/commits?".format(repo)
 
         # Verifying for Repo access
         verify_repo_access(url_for_repo, repo, config)
@@ -364,25 +353,6 @@ def do_discover(config):
     catalog = get_catalog()
     # dump catalog
     print(json.dumps(catalog, indent=2))
-
-def write_commit_detail(org, project, project_repo, commit, schema, mdata, extraction_time):
-    # Fetch the individual commit to obtain parents. This also provides pushes and other
-    # properties, but we don't care about those for now.
-    for commit_detail in authed_get_all_pages(
-        'commits',
-        "https://dev.azure.com/{}/{}/_apis/git/repositories/{}/commits/{}?" \
-        "api-version={}" \
-        .format(org, project, project_repo, commit['commitId'], API_VESION)
-    ):
-        detail_json = commit_detail.json()
-        commit['parents'] = detail_json['parents']
-
-    # We no longer want to fetch changes here and instead will do it with GitLocal
-
-    commit['_sdc_repository'] = "{}/{}/_git/{}".format(org, project, project_repo)
-    with singer.Transformer() as transformer:
-        rec = transformer.transform(commit, schema, metadata=metadata.to_map(mdata))
-    singer.write_record('commits', rec, time_extracted=extraction_time)
 
 def sync_all_commits(schema, repo_path, state, mdata, start_date):
     # This will only be used if it's our first run and we don't have any fetchedCommits. See below.
