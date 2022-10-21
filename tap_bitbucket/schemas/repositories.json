@@ -5,7 +5,7 @@
       "type": [
         "string"
       ],
-      "description": "Unique identifier of <source>:<org_name>/<repo_name>"
+      "description": "Unique identifier of <source>/<org_name>/<repo_name>"
     },
     "source": {
       "type": [
