@@ -703,7 +703,7 @@ def sync_all_repositories(schema, repo_path, state, mdata, _start_date):
     with metrics.record_counter('repositories') as counter:
         extraction_time = singer.utils.now()
         repo = {}
-        repo['id'] = 'bitbucket:' + repo_path
+        repo['id'] = 'bitbucket/' + repo_path
         repo['source'] = 'bitbucket'
         repo['org_name'] = repo_path.split('/')[0]
         repo['repo_name'] = repo_path.split('/')[1]
