@@ -711,6 +711,7 @@ def sync_all_repositories(schema, repo_path, state, mdata, _start_date):
         repo['fork_org_name'] = None # TODO: make `forks` API call to get this
         repo['fork_repo_name'] = None # TODO: make `forks` API call to get this
         repo['description'] = repo_metadata['description']
+        repo['default_branch'] = repo_metadata['mainbranch']['name']
         with singer.Transformer() as transformer:
             rec = transformer.transform(repo, schema, metadata=metadata.to_map(mdata))
         singer.write_record('repositories', rec, time_extracted=extraction_time)

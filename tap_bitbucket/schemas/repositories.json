@@ -48,6 +48,12 @@
         "null",
         "string"
       ]
+    },
+    "default_branch": {
+      "type": [
+        "null",
+        "string"
+      ]
     }
   }
 }
