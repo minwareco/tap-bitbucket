@@ -1,0 +1,59 @@
+{
+  "type": ["null", "object"],
+  "properties": {
+    "id": {
+      "type": [
+        "string"
+      ],
+      "description": "Unique identifier of <source>/<org_name>/<repo_name>"
+    },
+    "source": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "org_name": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "repo_name": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "is_source_public": {
+      "type": [
+        "null",
+        "boolean"
+      ]
+    },
+    "description": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "fork_org_name": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "fork_repo_name": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "default_branch": {
+      "type": [
+        "null",
+        "string"
+      ]
+    }
+  }
+}
