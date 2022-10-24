@@ -12,7 +12,7 @@
       "type": ["string"],
       "description": ""
     },
-    "date": {
+    "committer_date": {
       "type": ["null", "string"],
       "format": "date-time",
       "description": ""
