@@ -627,22 +627,21 @@ def sync_all_pull_requests(schemas, org, repo_path, state, mdata, start_date):
 
     with metrics.record_counter('pull_requests') as counter:
         extraction_time = singer.utils.now()
+        query = urllib.parse.quote('updated_on>={}'.format(bookmarkTime.isoformat()))
         for response in authed_get_all_pages(
             'pull_requests',
             'https://api.bitbucket.org/2.0/repositories/{}/pullrequests?'.format(repo_path) + \
-                'state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'
+                'q={}&sort=updated_on&page_len=100&state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'.format(query)
         ):
             prs = response.json()['values']
             for pr in prs:
-                # Since there is no "fromDate" like parameter in the API, just filter out PRs that have not
-                # been updated since the the starting time
-                updated_on = pr.get('updated_on')
-                if updated_on is not None and len(updated_on) > 0 and parser.parse(updated_on) < bookmarkTime:
-                    continue
-
+                # we have to fetch the PR on its own in order to get the full data payload. notably,
+                # participants and reviewers are not included in the response from the original request
+                # to list PRs (above)
+                pr = authed_get('pull_requests', 'https://api.bitbucket.org/2.0/repositories/{}/pullrequests/{}'.format(repo_path, pr['id'])).json()
                 pr['_sdc_repository'] = repo_path
                 pr['number'] = pr['id'] # e.g. 1, 13, 65
-                pr['id'] = '{}/{}'.format(repo_path, pr['number'])
+                pr['id'] = '{}/{}'.format(repo_path, pr['number']) # e.g. minware/repotest/1
                 pr['source'] = normalize_pull_request_endpoint(pr['source'])
                 pr['destination'] = normalize_pull_request_endpoint(pr['destination'])
 
