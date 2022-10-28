@@ -165,11 +165,10 @@ def calculate_seconds(epoch):
 
 def get_orgs():
     orgs = []
-    for response in authed_get_all_pages(
+    for memberships in authed_get_all_pages(
         'orgs',
         f'https://api.bitbucket.org/2.0/user/permissions/workspaces'
     ):
-        memberships = response.json()['values']
         for membership in memberships:
             logger.info("membership = {}".format(json.dumps(membership, indent = 4)))
             orgs.append(membership['workspace']['slug'])
@@ -178,11 +177,10 @@ def get_orgs():
 
 def get_repos_for_org(org):
     orgRepos = []
-    for response in authed_get_all_pages(
+    for repos in authed_get_all_pages(
         'repositories',
-        f'https://api.bitbucket.org/2.0/repositories/{org}'
+        f'https://api.bitbucket.org/2.0/repositories/{org}?pagelen=100'
     ):
-        repos = response.json()['values']
         for repo in repos:
             # Preserve the case used for the org name originally
             orgRepos.append(org + '/' + repo['name'])
@@ -197,7 +195,7 @@ def get_repo_metadata(repo_path):
             'repositories',
             'https://api.bitbucket.org/2.0/repositories/{}'.format(repo_path)
         )
-        repo_cache[repo_path] = response.json()
+        repo_cache[repo_path] = response
     return repo_cache[repo_path]
 
 def set_auth_headers(config, org = None):
@@ -230,16 +228,16 @@ def authed_get(source, url, headers={}):
                 raise_for_error(response, source, url)
 
             timer.tags[metrics.Tag.http_status_code] = response.status_code
-    
+
     if response is None:
         raise_for_error(response, source, url)
 
-    return response
+    return response.json()
 
 def authed_get_all_pages(source, url, headers={}):
     while True:
         r = authed_get(source, url, headers)
-        yield r
+        yield r['values']
         if 'next' in r:
             url = r['next']
         else:
@@ -375,11 +373,10 @@ def sync_all_commits(schema, repo_path, state, mdata, start_date):
 
     with metrics.record_counter('commits') as counter:
         extraction_time = singer.utils.now()
-        for response in  authed_get_all_pages(
+        for commits in  authed_get_all_pages(
             'commits',
-            "https://api.bitbucket.org/2.0/repositories/{}/commits?".format(repo_path),
+            "https://api.bitbucket.org/2.0/repositories/{}/commits?pagelen=100".format(repo_path),
         ):
-            commits = response.json()['values']
             for commit in commits:
                 # Skip commits we've already imported
                 if commit['hash'] in fetchedCommits:
@@ -596,12 +593,11 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
 
 def get_pull_request_heads(repo_path):
     heads = {}
-    for response in authed_get_all_pages(
+    for prs in authed_get_all_pages(
         'pull_requests',
         'https://api.bitbucket.org/2.0/repositories/{}/pullrequests?'.format(repo_path) + \
             'state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'
     ):
-        prs = response.json()['values']
         for pr in prs:
             prNumber = pr['id']
             heads['refs/pull/{}/head'.format(prNumber)] = pr['source']['commit']['hash']
@@ -628,17 +624,16 @@ def sync_all_pull_requests(schemas, org, repo_path, state, mdata, start_date):
     with metrics.record_counter('pull_requests') as counter:
         extraction_time = singer.utils.now()
         query = urllib.parse.quote('updated_on>={}'.format(bookmarkTime.isoformat()))
-        for response in authed_get_all_pages(
+        for prs in authed_get_all_pages(
             'pull_requests',
             'https://api.bitbucket.org/2.0/repositories/{}/pullrequests?'.format(repo_path) + \
-                'q={}&sort=updated_on&page_len=100&state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'.format(query)
+                'q={}&sort=updated_on&state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'.format(query)
         ):
-            prs = response.json()['values']
             for pr in prs:
                 # we have to fetch the PR on its own in order to get the full data payload. notably,
                 # participants and reviewers are not included in the response from the original request
                 # to list PRs (above)
-                pr = authed_get('pull_requests', 'https://api.bitbucket.org/2.0/repositories/{}/pullrequests/{}'.format(repo_path, pr['id'])).json()
+                pr = authed_get('pull_requests', 'https://api.bitbucket.org/2.0/repositories/{}/pullrequests/{}'.format(repo_path, pr['id']))
                 pr['_sdc_repository'] = repo_path
                 pr['number'] = pr['id'] # e.g. 1, 13, 65
                 pr['id'] = '{}/{}'.format(repo_path, pr['number']) # e.g. minware/repotest/1
@@ -671,17 +666,16 @@ def sync_all_pull_request_comments(schemas, org, repo_path, pr_id, pr_number, st
     with metrics.record_counter('pull_request_comments') as counter:
         extraction_time = singer.utils.now()
         query = urllib.parse.quote('created_on>{}'.format(bookmarkTime.isoformat()))
-        for response in authed_get_all_pages(
+        for comments in authed_get_all_pages(
             'pull_request_comments',
             'https://api.bitbucket.org/2.0/repositories/{}/pullrequests/{}/comments?'.format(repo_path, pr_number) + \
-                'q={}'.format(query)
+                'q={}&pagelen=100'.format(query)
         ):
-            comments = response.json()['values']
             for comment in comments:
                 comment['_sdc_repository'] = repo_path
                 comment['id'] = '{}/{}'.format(pr_id, comment['id'])
                 comment['pr_id'] = pr_id
-                
+
                 parent = comment.get('parent')
                 if parent:
                     parent['id'] = '{}/{}'.format(pr_id, parent['id'])
@@ -796,7 +790,7 @@ def do_sync(config, state, catalog):
         logger.info("Starting sync of repository: %s", repo)
 
         org = repo.split('/')[0]
-        
+
         for stream in catalog['streams']:
             stream_id = stream['tap_stream_id']
             stream_schema = stream['schema']
