@@ -209,23 +209,18 @@ class GitLocal:
 
   def hasLocalCommit(self, repo, sha, noRetry=False):
     repoDir = self._getRepoWorkingDir(repo)
-    completed = subprocess.run(['git', 'log', '-n1', sha], cwd=repoDir, capture_output=True)
-    if completed.stderr.decode('utf-8', errors='replace').find('fatal: bad object') != -1:
-      if not noRetry:
-        completed = subprocess.run(['git', 'fetch', 'origin', sha], cwd=repoDir, capture_output=True)
-        if completed.stderr.decode('utf-8', errors='replace').find('fatal: ') != -1:
-          strippedOutput = completed.stderr.replace(self.token.encode('utf8'), b'<TOKEN>')
-          raise GitLocalException('Head fetch failed with code {} for repo {}, sha {}, message: {}'\
-            .format(completed.returncode, repo, sha, strippedOutput))
-        return self.hasLocalCommit(repo, sha, True)
-      return False
-    elif completed.returncode != 0:
-      # Don't send the acces token through the error logging system
-      strippedOutput = completed.stderr.replace(self.token.encode('utf8'), b'<TOKEN>')
-      raise GitLocalException("Log of repo {}, sha {} failed with code {}, "\
-        "message: {}".format(repo, sha, completed.returncode, strippedOutput))
-    else:
+    completed = subprocess.run(['git', 'cat-file', '-e', sha + '^{commit}'], cwd=repoDir, capture_output=True)
+    if completed.returncode == 0:
       return True
+
+    if not noRetry:
+      completed = subprocess.run(['git', 'fetch', 'origin', sha], cwd=repoDir, capture_output=True)
+      if completed.stderr.decode('utf-8', errors='replace').find('fatal: ') != -1:
+        strippedOutput = completed.stderr.replace(self.token.encode('utf8'), b'<TOKEN>')
+        raise GitLocalException('Head fetch failed with code {} for repo {}, sha {}, message: {}'\
+          .format(completed.returncode, repo, sha, strippedOutput))
+      return self.hasLocalCommit(repo, sha, True)
+    return False
 
   def getCommitsFromHead(self, repo, headSha, limit=False, offset=False):
     """

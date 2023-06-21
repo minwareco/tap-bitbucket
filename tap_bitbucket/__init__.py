@@ -525,7 +525,7 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
             missingParents = {}
 
             # Verify that this commit exists in our mirrored repo
-            commitHasLocal = gitLocal.hasLocalCommit(repo_path, headSha)
+            commitHasLocal = gitLocal.hasLocalCommit(repo_path, headSha, True)
             if not commitHasLocal:
                 logger.warning('MISSING REF/COMMIT {}/{}/{}'.format(repo_path, headRef, headSha))
                 # Skip this now that we're mirroring everything. We shouldn't have anything that's
