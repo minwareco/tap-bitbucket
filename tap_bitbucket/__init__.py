@@ -15,7 +15,7 @@ import singer.bookmarks as bookmarks
 import singer.metrics as metrics
 import difflib
 import urllib.parse
-
+import jwt
 
 from .gitlocal import GitLocal
 
@@ -27,6 +27,7 @@ logger = singer.get_logger()
 repo_cache = {}
 
 REQUIRED_CONFIG_KEYS = ['start_date', 'user_name', 'access_token', 'repository']
+REQUIRED_CONFIG_KEYS_JWT = ['start_date', 'jwt_client_key', 'jwt_shared_secret', 'jwt_subject', 'repository']
 
 KEY_PROPERTIES = {
     'commits': ['id'],
@@ -198,13 +199,33 @@ def get_repo_metadata(repo_path):
         repo_cache[repo_path] = response
     return repo_cache[repo_path]
 
-def set_auth_headers(config, org = None):
-    # TODO: support BitBucket app token
+# pylint: disable=dangerous-default-value
+def authed_post(source, url, data, headers={}):
+    logger.info("authed_get URL = {}".format(url))
+    with metrics.http_request_timer(source) as timer:
+        response = None
+        retryCount = 0
+        maxRetries = 3
+        while response is None and retryCount < maxRetries:
+            session.headers.update(headers)
+            # Uncomment for debugging
+            #logger.info("requesting {}".format(url))
+            response = session.post(url, data)
 
-    access_token = config['access_token']
-    session.headers.update({'authorization': 'token ' + access_token})
+            if response.status_code == 429:
+                retryCount += 1
+                time.sleep(retryCount * 60)
+                continue
 
-    return access_token
+            if response.status_code != 200:
+                raise_for_error(response, source, url)
+
+            timer.tags[metrics.Tag.http_status_code] = response.status_code
+
+    if response is None:
+        raise_for_error(response, source, url)
+
+    return response.json()
 
 # pylint: disable=dangerous-default-value
 def authed_get(source, url, headers={}):
@@ -347,7 +368,8 @@ def verify_access_for_repo(config):
         verify_repo_access(url_for_repo, repo, config)
 
 def do_discover(config):
-    verify_access_for_repo(config)
+    # We don't need repo access if we're just dumping the catalog
+    #verify_access_for_repo(config)
     catalog = get_catalog()
     # dump catalog
     print(json.dumps(catalog, indent=2))
@@ -757,7 +779,6 @@ def do_sync(config, state, catalog):
     if config['repository'] == '*/*':
         if not config['access_token'] or len(config['access_token']) == 0:
             raise Exception('Cannot use org wildcard without a PAT (access_token).')
-        # set_auth_headers(config)
         repositories = list()
         orgs = get_orgs()
         for org in orgs:
@@ -771,16 +792,14 @@ def do_sync(config, state, catalog):
         repoSplit = repo.split('/')
         if repoSplit[1] == '*':
             org = repoSplit[0]
-            # set_auth_headers(config, org)
             orgRepos = get_repos_for_org(repoSplit[0])
             allRepos.extend(orgRepos)
         else:
             allRepos.append(repo)
 
-    # access_token = set_auth_headers(config, org)
     domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
     gitLocal = GitLocal({
-        'access_token': "{}:{}".format(config['user_name'], config['access_token']),
+        'access_token': config["git_access_token"],
         'workingDir': '/tmp',
     }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
         config['hmac_token'] if 'hmac_token' in config else None)
@@ -837,14 +856,50 @@ def do_sync(config, state, catalog):
     # The state can get big, don't write it until the end
     singer.write_state(state)
 
+def get_args():
+    unchecked_args = singer.utils.parse_args([])
+    if 'jwt_client_key' in unchecked_args.config.keys():
+        return singer.utils.parse_args(REQUIRED_CONFIG_KEYS_JWT)
+    
+    return singer.utils.parse_args(REQUIRED_CONFIG_KEYS)
+
+def generate_jwt_token(issuer, subject, secret):
+    now = int(time.time())
+
+    encoded_jwt = jwt.encode({
+        'iss': issuer,
+        # issued at time, 60 seconds in the past to allow for clock drift
+        "iat": now,
+        "exp": now + (6 * 60 * 60), # timeout in seconds = 6 hours
+        "sub": subject
+    }, secret, "HS256")
+    
+    return encoded_jwt
+
 @singer.utils.handle_top_exception(logger)
 def main():
-    args = singer.utils.parse_args(REQUIRED_CONFIG_KEYS)
+    args = get_args()
 
-    # Initialize basic auth
-    user_name = args.config['user_name']
-    access_token = args.config['access_token']
-    session.auth = (user_name, access_token)
+    config = args.config
+    if 'user_name' in args.config:
+        # Initialize basic auth
+        user_name = args.config['user_name']
+        access_token = args.config['access_token']
+        session.auth = (user_name, access_token)
+        config["git_access_token"] = "{}:{}".format(user_name, access_token)
+    elif 'jwt_client_key' in args.config:
+        jwt_token = generate_jwt_token(
+            args.config['jwt_client_key'],
+            args.config['jwt_subject'],
+            args.config['jwt_shared_secret'])
+        session.headers.update({'authorization': 'JWT ' + jwt_token})
+        access_token_response = authed_post(
+            'access token request',
+            'https://bitbucket.org/site/oauth2/access_token',
+            {'grant_type': 'urn:bitbucket:oauth2:jwt'},
+            {'Content-Type': 'application/x-www-form-urlencoded'})
+
+        config["git_access_token"] = "x-token-auth:{}".format(access_token_response['access_token'])
 
     if args.discover:
         do_discover(args.config)
