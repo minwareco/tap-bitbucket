@@ -184,7 +184,7 @@ def get_repos_for_org(org):
     ):
         for repo in repos:
             # Preserve the case used for the org name originally
-            orgRepos.append(org + '/' + repo['name'])
+            orgRepos.append(org + '/' + repo['slug'])
             repo_cache[repo['full_name']] = repo
 
     return orgRepos
