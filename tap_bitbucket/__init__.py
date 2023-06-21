@@ -630,7 +630,7 @@ def get_pull_request_heads(repo_path):
 def normalize_pull_request_endpoint(endpoint):
     result = {
         "branch": endpoint['branch']['name'],
-        "commit_hash": endpoint['commit']['hash'],
+        "commit_hash": endpoint['commit']['hash'] if endpoint['commit'] is not None else None,
         "repository": endpoint['repository'] # no transform done
     }
     return result
