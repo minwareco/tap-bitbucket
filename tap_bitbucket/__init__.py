@@ -201,7 +201,6 @@ def get_repo_metadata(repo_path):
 
 # pylint: disable=dangerous-default-value
 def authed_post(source, url, data, headers={}):
-    logger.info("authed_get URL = {}".format(url))
     with metrics.http_request_timer(source) as timer:
         response = None
         retryCount = 0
