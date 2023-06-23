@@ -228,7 +228,6 @@ def authed_post(source, url, data, headers={}):
 
 # pylint: disable=dangerous-default-value
 def authed_get(source, url, headers={}):
-    logger.info("authed_get URL = {}".format(url))
     with metrics.http_request_timer(source) as timer:
         response = None
         retryCount = 0
@@ -236,11 +235,12 @@ def authed_get(source, url, headers={}):
         while response is None and retryCount < maxRetries:
             session.headers.update(headers)
             # Uncomment for debugging
-            #logger.info("requesting {}".format(url))
+            logger.info("retryCount = {} , requesting {}".format(url, retryCount))
             response = session.request(method='get', url=url)
 
             if response.status_code == 429:
                 retryCount += 1
+                response = None
                 time.sleep(retryCount * 60)
                 continue
 
