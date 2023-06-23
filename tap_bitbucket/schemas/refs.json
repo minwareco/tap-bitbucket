@@ -1,6 +1,9 @@
 {
   "type": ["null", "object"],
   "properties": {
+    "id": {
+      "type": ["string"]
+    },
     "_sdc_repository": {
       "type": ["string"]
     },
@@ -12,5 +15,6 @@
       "type": ["null", "string"],
       "description": "The ref's commit hash"
     }
-  }
+  },
+  "required": ["id"]
 }
