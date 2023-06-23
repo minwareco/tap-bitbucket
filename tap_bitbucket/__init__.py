@@ -235,7 +235,7 @@ def authed_get(source, url, headers={}):
         while response is None and retryCount < maxRetries:
             session.headers.update(headers)
             # Uncomment for debugging
-            logger.info("retryCount = {} , requesting {}".format(url, retryCount))
+            logger.info("retryCount = {} , requesting {}".format(retryCount, url))
             response = session.request(method='get', url=url)
 
             if response.status_code == 429:
