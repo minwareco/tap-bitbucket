@@ -34,7 +34,7 @@ KEY_PROPERTIES = {
     'commit_files': ['id'],
     'pull_requests': ['id'],
     'pull_request_comments': ['id'],
-    'refs': ['ref'],
+    'refs': ['id'],
     'repositories': ['id'],
 }
 
@@ -506,6 +506,7 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
             # Emit the ref record as well if it's not for a pull request
             if not ('refs/pull' in headRef):
                 refRecord = {
+                    'id': '{}/{}'.format(repo_path, headRef),
                     '_sdc_repository': repo_path,
                     'ref': headRef,
                     'sha': headSha
@@ -901,10 +902,10 @@ def main():
         config["git_access_token"] = "x-token-auth:{}".format(access_token_response['access_token'])
 
     if args.discover:
-        do_discover(args.config)
+        do_discover(config)
     else:
         catalog = args.properties if args.properties else get_catalog()
-        do_sync(args.config, args.state, catalog)
+        do_sync(config, args.state, catalog)
 
 if __name__ == '__main__':
     main()
