@@ -231,7 +231,7 @@ def authed_get(source, url, headers={}):
     with metrics.http_request_timer(source) as timer:
         response = None
         retryCount = 0
-        maxRetries = 3
+        maxRetries = 5
         while response is None and retryCount < maxRetries:
             session.headers.update(headers)
             # Uncomment for debugging
