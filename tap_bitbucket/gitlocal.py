@@ -56,7 +56,7 @@ def hashPatchLine(patchLine, hmacToken = None):
 
 
 def parseDiffLines(lines, shouldEncrypt=False, hmacToken=None):
-  MAX_DIFF_LINES=1000
+  MAX_DIFF_LINES=10000
   MAX_PATCH_SIZE=1024 * 1024
   MAX_LINE_LENGTH=500
 
@@ -64,10 +64,16 @@ def parseDiffLines(lines, shouldEncrypt=False, hmacToken=None):
   curChange = None
   state = 'start'
   for line in lines:
-    # Replace any invalid characters
-    # Also, don't allow nulls since we are treating data as strings downstream. (FFFD is unicode
-    # replacement character.)
-    line = line[0:MAX_LINE_LENGTH-1].replace('\u0000', '\uFFFD')
+    line = line[0:MAX_LINE_LENGTH-1]
+
+    if '\u0000' in line:
+      logger.info('Found unicode NULL byte (U+0000), assuming binary file')
+      if curChange:
+        curChange['patch'].clear()
+        curChange['is_binary'] = True
+      else:
+        continue
+
     if len(line) == 0:
       # Only happens on last line -- other blank lines at least start with space
       if curChange:
@@ -101,25 +107,34 @@ def parseDiffLines(lines, shouldEncrypt=False, hmacToken=None):
       state = 'start'
       pass
     elif state == 'inpatch':
+      if curChange['is_binary'] or curChange['is_large_patch']:
+        continue
+
       if line[0] == '@':
         # Note: this line may have context at the end, which is okay and part of the git difff
         # format.
-        if curChange['patch_lines'] < MAX_DIFF_LINES and curChange['patch_length'] < MAX_PATCH_SIZE:
-          patchLine = hashPatchLine(line, hmacToken) if shouldEncrypt else line
-          curChange['patch'].append(patchLine)
-          curChange['patch_lines'] += 1
-          curChange['patch_length'] += len(patchLine)
+        patchLine = hashPatchLine(line, hmacToken) if shouldEncrypt else line
+        curChange['patch'].append(patchLine)
+        curChange['patch_lines'] += 1
+        curChange['patch_length'] += len(patchLine)
+        
+        if curChange['patch_lines'] > MAX_DIFF_LINES or curChange['patch_length'] > MAX_PATCH_SIZE:
+          curChange['patch'].clear()
+          curChange['is_large_patch'] = True
       else:
         if line[0] == '-':
           curChange['deletions'] += 1
         elif line[0] == '+':
           curChange['additions'] += 1
         
-        if curChange['patch_lines'] < MAX_DIFF_LINES and curChange['patch_length'] < MAX_PATCH_SIZE:
-          patchLine = hashPatchLine(line, hmacToken) if shouldEncrypt else line
-          curChange['patch'].append(patchLine)
-          curChange['patch_lines'] += 1
-          curChange['patch_length'] += len(patchLine)
+        patchLine = hashPatchLine(line, hmacToken) if shouldEncrypt else line
+        curChange['patch'].append(patchLine)
+        curChange['patch_lines'] += 1
+        curChange['patch_length'] += len(patchLine)
+        
+        if curChange['patch_lines'] > MAX_DIFF_LINES or curChange['patch_length'] > MAX_PATCH_SIZE:
+          curChange['patch'].clear()
+          curChange['is_large_patch'] = True
     elif line[0] == 'i': # index
       # Ignore file mode changes for now
       pass
@@ -355,6 +370,15 @@ class GitLocal:
     proc = subprocess.Popen(['git', 'diff', parentCommit, sha], **popenOptions)
     returnCode, stdout, stderr = (proc.returncode, proc.stdout, proc.stderr)
 
+    # give git a second to fail so we can check the return code
+    try:
+      returnCode = proc.wait(1)
+    except:
+      pass
+
+    if returnCode is None:
+      logger.warn('git diff returnCode is None, unable to check for failure')
+    
     if returnCode is not None and returnCode != 0:
       strippedOutput = ''
 
