@@ -6,6 +6,8 @@ import os
 import singer
 import hashlib
 
+from io import TextIOWrapper
+
 class GitLocalException(Exception):
   pass
 
@@ -53,10 +55,24 @@ def hashPatchLine(patchLine, hmacToken = None):
 
 
 def parseDiffLines(lines, shouldEncrypt=False, hmacToken=None):
+  MAX_DIFF_LINES=10000
+  MAX_PATCH_SIZE=1024 * 1024
+  MAX_LINE_LENGTH=500
+
   changes = []
   curChange = None
   state = 'start'
   for line in lines:
+    line = line[0:MAX_LINE_LENGTH-1]
+
+    if '\u0000' in line:
+      logger.info('Found unicode NULL byte (U+0000), assuming binary file')
+      if curChange:
+        curChange['patch'].clear()
+        curChange['is_binary'] = True
+      else:
+        continue
+
     if len(line) == 0:
       # Only happens on last line -- other blank lines at least start with space
       if curChange:
@@ -80,6 +96,8 @@ def parseDiffLines(lines, shouldEncrypt=False, hmacToken=None):
         'additions': 0,
         'deletions': 0,
         'patch': [],
+        'patch_lines': 0,
+        'patch_length': 0,
         'previous_filename': '',
         'is_binary': False,
         'is_large_patch': False,
@@ -88,16 +106,34 @@ def parseDiffLines(lines, shouldEncrypt=False, hmacToken=None):
       state = 'start'
       pass
     elif state == 'inpatch':
+      if curChange['is_binary'] or curChange['is_large_patch']:
+        continue
+
       if line[0] == '@':
         # Note: this line may have context at the end, which is okay and part of the git difff
         # format.
-        curChange['patch'].append(hashPatchLine(line, hmacToken) if shouldEncrypt else line)
+        patchLine = hashPatchLine(line, hmacToken) if shouldEncrypt else line
+        curChange['patch'].append(patchLine)
+        curChange['patch_lines'] += 1
+        curChange['patch_length'] += len(patchLine)
+        
+        if curChange['patch_lines'] > MAX_DIFF_LINES or curChange['patch_length'] > MAX_PATCH_SIZE:
+          curChange['patch'].clear()
+          curChange['is_large_patch'] = True
       else:
         if line[0] == '-':
           curChange['deletions'] += 1
         elif line[0] == '+':
           curChange['additions'] += 1
-        curChange['patch'].append(hashPatchLine(line, hmacToken) if shouldEncrypt else line)
+        
+        patchLine = hashPatchLine(line, hmacToken) if shouldEncrypt else line
+        curChange['patch'].append(patchLine)
+        curChange['patch_lines'] += 1
+        curChange['patch_length'] += len(patchLine)
+        
+        if curChange['patch_lines'] > MAX_DIFF_LINES or curChange['patch_length'] > MAX_PATCH_SIZE:
+          curChange['patch'].clear()
+          curChange['is_large_patch'] = True
     elif line[0] == 'i': # index
       # Ignore file mode changes for now
       pass
@@ -159,6 +195,7 @@ class GitLocal:
       self.shouldEncrypt = False
     self.LS_CACHE = {}
     self.INIT_REPO = {}
+    self.rootCommits = {}
 
   def _getOrgWorkingDir(self, repo):
     orgName = repo.split('/')[0]
@@ -178,8 +215,19 @@ class GitLocal:
     """
     Clones a repository using git clone, throwing an error if the operation does not succeed
     """
+    cloneUrl = self.sourceUrlPattern.format(self.token, repo)
+    
     # If directory already exists, do an update
     if os.path.exists(repoWdir):
+      logger.info("Updating git remote")
+
+      completed = subprocess.run(['git', 'remote', 'set-url', 'origin', cloneUrl], cwd=repoWdir, capture_output=True)
+      if completed.returncode != 0:
+        # Don't send the acces token through the error logging system
+        strippedOutput = completed.stderr.replace(self.token.encode('utf8'), b'<TOKEN>')
+        raise GitLocalException("Updating remote origin of repo {} failed with code {}, message: {}"\
+          .format(repo, completed.returncode, strippedOutput))
+      
       logger.info("Running git remote update")
       completed = subprocess.run(['git', 'remote', 'update'], cwd=repoWdir, capture_output=True)
       if completed.returncode != 0:
@@ -189,7 +237,6 @@ class GitLocal:
           .format(repo, completed.returncode, strippedOutput))
     else:
       logger.info('Running git clone for repo {}'.format(repo))
-      cloneUrl = self.sourceUrlPattern.format(self.token, repo)
       orgDir = self._getOrgWorkingDir(repo)
       completed = subprocess.run(['git', 'clone', '--mirror', cloneUrl], cwd=orgDir,
         capture_output=True)
@@ -199,11 +246,25 @@ class GitLocal:
         raise GitLocalException("Clone of repo {} failed with code {}, message: {}"\
           .format(repo, completed.returncode, strippedOutput))
 
+  def _initRootCommits(self, repo, repoWdir):
+    logger.info('Running git rev-list --max-parents=0 HEAD')
+    completed = subprocess.run(['git', 'rev-list', '--max-parents=0', 'HEAD'],
+                               cwd=repoWdir, capture_output=True)
+    if completed.returncode != 0:
+      # Don't send the acces token through the error logging system
+      strippedOutput = completed.stderr.replace(self.token.encode('utf8'), b'<TOKEN>')
+      raise GitLocalException("Finding root commits of repo {} failed with code {}, message: {}"\
+        .format(repo, completed.returncode, strippedOutput))
+    
+    self.rootCommits[repo] = completed.stdout.decode('utf-8', errors='replace').splitlines()
+    logger.info('Root commits for {}, are {}'.format(repo, self.rootCommits[repo]))
+
   def _initRepo(self, repo, repoWdir):
     if repo in self.INIT_REPO:
       return
 
     self._cloneRepo(repo, repoWdir)
+    self._initRootCommits(repo, repoWdir)
 
     self.INIT_REPO[repo] = True
 
@@ -287,33 +348,53 @@ class GitLocal:
       })
     return commits
 
+  def _getRootCommits(self, repo):
+    return self.rootCommits[repo]
+
   def getCommitDiff(self, repo, sha):
     """
     Gets detailed information about a commit at a particular sha. This funcion assumes that the
     head has already been fetched and this commit is available.
     """
     repoDir = self._getRepoWorkingDir(repo)
-    completed = subprocess.run(['git', 'diff', sha + '~1', sha], cwd=repoDir, capture_output=True)
-    # Special case -- first commit, diff instead with an empty tree
-    if completed.returncode != 0 and b"~1': unknown revision or path not in the working tree" \
-        in completed.stderr:
-      # 4b825dc642cb6eb9a060e54bf8d69288fbee4904 is the sha of the empty tree
-      completed = subprocess.run(['git', 'diff', '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
-        sha], cwd=repoDir, capture_output=True)
-    if completed.returncode != 0:
-      # Don't send the acces token through the error logging system
-      strippedOutput = '' if not completed.stderr else \
-        completed.stderr.replace(self.token.encode('utf8'), b'<TOKEN>')
+    popenOptions = {
+      'cwd': repoDir,
+      'stdout': subprocess.PIPE,
+      'stderr': subprocess.PIPE
+    }
+    # 4b825dc642cb6eb9a060e54bf8d69288fbee4904 is the sha of the empty tree
+    emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+    parentCommit = emptyTree if sha in self._getRootCommits(repo) else sha + '~1'
+    logger.debug('running git diff {} {}'.format(parentCommit, sha))
+    proc = subprocess.Popen(['git', 'diff', parentCommit, sha], **popenOptions)
+    returnCode, stdout, stderr = (proc.returncode, proc.stdout, proc.stderr)
+
+    # give git a second to fail so we can check the return code
+    try:
+      returnCode = proc.wait(1)
+    except:
+      pass
+
+    if returnCode is None:
+      logger.warn('git diff returnCode is None, unable to check for failure')
+    
+    if returnCode is not None and returnCode != 0:
+      strippedOutput = ''
+
+      if stderr is not None:
+        logger.info('stderr')
+        strippedOutput = stderr.read().decode('utf-8', errors="replace")
+      
+      if strippedOutput == '' and stdout is not None:
+        logger.info('stdout')
+        strippedOutput = stdout.read().decode('utf-8', errors="replace")
+
+      strippedOutput = strippedOutput.replace(self.token, '<TOKEN>')
       raise GitLocalException("Diff of repo {}, sha {} failed with code {}, message: {}".format(
-        repo, sha, completed.returncode, strippedOutput))
+        repo, sha, returnCode, strippedOutput))
 
-    # Replace any invalid characters
-    # Also, don't allow nulls since we are treating data as strings downstream. (FFFD is unicode
-    # replacement character.)
-    outstr = completed.stdout.decode('utf8', errors='replace').replace('\u0000', '\uFFFD')
-    lines = outstr.split('\n')
-
-    parsed = parseDiffLines(lines, self.shouldEncrypt, self.hmacToken)
+    stream = TextIOWrapper(stdout, encoding='utf-8', errors='replace', newline='\n')
+    parsed = parseDiffLines(stream, self.shouldEncrypt, self.hmacToken)
     for diff in parsed:
       diff['commit_sha'] = sha
 
