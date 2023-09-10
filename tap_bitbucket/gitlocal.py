@@ -5,7 +5,6 @@ import subprocess
 import os
 import singer
 import hashlib
-import logging
 
 from io import TextIOWrapper
 
