@@ -247,8 +247,8 @@ class GitLocal:
           .format(repo, completed.returncode, strippedOutput))
 
   def _initRootCommits(self, repo, repoWdir):
-    logger.info('Running git rev-list --max-parents=0 HEAD')
-    completed = subprocess.run(['git', 'rev-list', '--max-parents=0', 'HEAD'],
+    logger.info('Running git rev-list --max-parents=0 --all')
+    completed = subprocess.run(['git', 'rev-list', '--max-parents=0', '--all'],
                                cwd=repoWdir, capture_output=True)
     if completed.returncode != 0:
       # Don't send the acces token through the error logging system
