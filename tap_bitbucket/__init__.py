@@ -17,7 +17,7 @@ import difflib
 import urllib.parse
 import jwt
 
-from .gitlocal import GitLocal
+from gitlocal import GitLocal
 
 from singer import metadata
 
@@ -802,7 +802,8 @@ def do_sync(config, state, catalog):
         'access_token': config["git_access_token"],
         'workingDir': '/tmp',
     }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
-        config['hmac_token'] if 'hmac_token' in config else None)
+        config['hmac_token'] if 'hmac_token' in config else None,
+        logger=logger.getChild('GitLocal'))
 
     #pylint: disable=too-many-nested-blocks
     for repo in allRepos:
