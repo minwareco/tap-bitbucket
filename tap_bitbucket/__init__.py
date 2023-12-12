@@ -16,6 +16,7 @@ import singer.metrics as metrics
 import difflib
 import urllib.parse
 import jwt
+from random import randint
 
 from gitlocal import GitLocal
 
@@ -204,7 +205,7 @@ def authed_post(source, url, data, headers={}):
     with metrics.http_request_timer(source) as timer:
         response = None
         retryCount = 0
-        maxRetries = 3
+        maxRetries = 4
         while response is None and retryCount < maxRetries:
             session.headers.update(headers)
             # Uncomment for debugging
@@ -213,7 +214,8 @@ def authed_post(source, url, data, headers={}):
 
             if response.status_code == 429:
                 retryCount += 1
-                time.sleep(retryCount * 60)
+                # exponential backoff + 5-10 second jitter
+                time.sleep(30 * (2**retryCount) + randint(5,10))
                 continue
 
             if response.status_code != 200:
@@ -861,7 +863,7 @@ def get_args():
     unchecked_args = singer.utils.parse_args([])
     if 'jwt_client_key' in unchecked_args.config.keys():
         return singer.utils.parse_args(REQUIRED_CONFIG_KEYS_JWT)
-    
+
     return singer.utils.parse_args(REQUIRED_CONFIG_KEYS)
 
 def generate_jwt_token(issuer, subject, secret):
@@ -874,7 +876,7 @@ def generate_jwt_token(issuer, subject, secret):
         "exp": now + (6 * 60 * 60), # timeout in seconds = 6 hours
         "sub": subject
     }, secret, "HS256")
-    
+
     return encoded_jwt
 
 @singer.utils.handle_top_exception(logger)
