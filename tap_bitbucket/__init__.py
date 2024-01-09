@@ -200,20 +200,27 @@ def get_repo_metadata(repo_path):
         repo_cache[repo_path] = response
     return repo_cache[repo_path]
 
-# pylint: disable=dangerous-default-value
-def authed_post(source, url, data, headers={}):
+def authed_request(source, url, method, data=None, headers=None):
     with metrics.http_request_timer(source) as timer:
         response = None
         retryCount = 0
         maxRetries = 4
-        while response is None and retryCount < maxRetries:
+        if headers is not None:
             session.headers.update(headers)
-            # Uncomment for debugging
-            #logger.info("requesting {}".format(url))
-            response = session.post(url, data)
+
+        while response is None and retryCount < maxRetries:
+            if retryCount > 0:
+                logger.info(
+                    "retryCount = {} elapsed = {:.2f}s, requesting {} {}".format(
+                        retryCount, timer.elapsed(), method, url
+                    )
+                )
+
+            response = session.request(method, url, data=data)
 
             if response.status_code == 429:
                 retryCount += 1
+                response = None
                 # exponential backoff + 5-10 second jitter
                 time.sleep(30 * (2**retryCount) + randint(5,10))
                 continue
@@ -228,35 +235,13 @@ def authed_post(source, url, data, headers={}):
 
     return response.json()
 
-# pylint: disable=dangerous-default-value
-def authed_get(source, url, headers={}):
-    with metrics.http_request_timer(source) as timer:
-        response = None
-        retryCount = 0
-        maxRetries = 5
-        while response is None and retryCount < maxRetries:
-            session.headers.update(headers)
-            # Uncomment for debugging
-            logger.info("retryCount = {} , requesting {}".format(retryCount, url))
-            response = session.request(method='get', url=url)
+def authed_post(source, url, data, headers=None):
+    return authed_request(source, url, 'post', data, headers)
 
-            if response.status_code == 429:
-                retryCount += 1
-                response = None
-                time.sleep(retryCount * 60)
-                continue
+def authed_get(source, url, headers=None):
+    return authed_request(source, url, 'GET', None, headers)
 
-            if response.status_code != 200:
-                raise_for_error(response, source, url)
-
-            timer.tags[metrics.Tag.http_status_code] = response.status_code
-
-    if response is None:
-        raise_for_error(response, source, url)
-
-    return response.json()
-
-def authed_get_all_pages(source, url, headers={}):
+def authed_get_all_pages(source, url, headers=None):
     while True:
         r = authed_get(source, url, headers)
         yield r['values']
