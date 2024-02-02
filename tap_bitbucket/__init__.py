@@ -228,7 +228,7 @@ def authed_request(source, url, method, data=None, headers=None):
                 retryCount += 1
                 response = None
                 # exponential backoff + 5-10 second jitter
-                time.sleep(45 * (2**retryCount) + randint(5,10))
+                time.sleep(30 * (2**retryCount) + randint(5,10))
                 continue
 
             if response.status_code != 200:
