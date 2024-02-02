@@ -74,6 +74,9 @@ class ConflictError(BitBucketException):
 class RateLimitExceeded(BitBucketException):
     pass
 
+class ExceededRetries(BitBucketException):
+    pass
+
 ERROR_CODE_EXCEPTION_MAPPING = {
     301: {
         "raise_exception": MovedPermanentlyError,
@@ -139,6 +142,9 @@ def get_bookmark(state, repo, stream_name, bookmark_key, default_value=None):
     return None
 
 def raise_for_error(resp, source, url):
+    if resp is None:
+        raise ExceededRetries("Exceeded retries for request. Url: {}".format(url)) 
+
     error_code = resp.status_code
     try:
         response_json = resp.json()
@@ -204,7 +210,7 @@ def authed_request(source, url, method, data=None, headers=None):
     with metrics.http_request_timer(source) as timer:
         response = None
         retryCount = 0
-        maxRetries = 4
+        maxRetries = 5
         if headers is not None:
             session.headers.update(headers)
 
@@ -230,6 +236,7 @@ def authed_request(source, url, method, data=None, headers=None):
 
             timer.tags[metrics.Tag.http_status_code] = response.status_code
 
+    # This should only happen if retries where exceeded 
     if response is None:
         raise_for_error(response, source, url)
 
