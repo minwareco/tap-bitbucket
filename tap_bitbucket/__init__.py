@@ -224,7 +224,7 @@ def authed_request(source, url, method, data=None, headers=None):
 
             response = session.request(method, url, data=data)
 
-            if response.status_code == 429:
+            if response.status_code in [429, 504]:
                 retryCount += 1
                 response = None
                 # exponential backoff + 5-10 second jitter
