@@ -210,7 +210,7 @@ def authed_request(source, url, method, data=None, headers=None):
     with metrics.http_request_timer(source) as timer:
         response = None
         retryCount = 0
-        maxRetries = 5
+        maxRetries = 8
         if headers is not None:
             session.headers.update(headers)
 
@@ -228,7 +228,7 @@ def authed_request(source, url, method, data=None, headers=None):
                 retryCount += 1
                 response = None
                 # exponential backoff + 5-10 second jitter
-                time.sleep(30 * (2**retryCount) + randint(5,10))
+                time.sleep(4 * (2**retryCount) + randint(2, 5))
                 continue
 
             if response.status_code != 200:
