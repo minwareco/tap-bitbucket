@@ -207,34 +207,41 @@ def get_repo_metadata(repo_path):
     return repo_cache[repo_path]
 
 def authed_request(source, url, method, data=None, headers=None):
-    with metrics.http_request_timer(source) as timer:
-        response = None
-        retryCount = 0
-        maxRetries = 5
-        if headers is not None:
-            session.headers.update(headers)
+    
+    response = None
+    retryCount = 0
+    maxRetries = 8
+    if headers is not None:
+        session.headers.update(headers)
 
-        while response is None and retryCount < maxRetries:
-            if retryCount > 0:
-                logger.info(
-                    "retryCount = {} elapsed = {:.2f}s, requesting {} {}".format(
-                        retryCount, timer.elapsed(), method, url
-                    )
+    while response is None and retryCount < maxRetries:
+        if retryCount > 0:
+            logger.info(
+                "retryCount = {} elapsed = {:.2f}s, requesting {} {}".format(
+                    retryCount, timer.elapsed(), method, url
                 )
+            )
 
+        with metrics.http_request_timer(source) as timer:
+            timer.tags['url'] = url
+            timer.tags['method'] = method
             response = session.request(method, url, data=data)
-
-            if response.status_code in [429, 504]:
-                retryCount += 1
-                response = None
-                # exponential backoff + 5-10 second jitter
-                time.sleep(30 * (2**retryCount) + randint(5,10))
-                continue
-
-            if response.status_code != 200:
-                raise_for_error(response, source, url)
-
             timer.tags[metrics.Tag.http_status_code] = response.status_code
+
+        if response.status_code in [429, 504]:
+            retryCount += 1
+            # exponential backoff + 2-5 second jitter
+            with singer.metrics.Timer('request_backoff', { 'retryCount': retryCount }) as backoff_timer:
+                backoff_timer.tags['backoff_type'] = 'exponential'
+                response = None
+                sleep_time = 5 * (2**retryCount) + randint(2, 5)
+                backoff_timer.tags['sleep_time'] = sleep_time
+                time.sleep(sleep_time)
+
+            continue
+
+        if response.status_code != 200:
+            raise_for_error(response, source, url)
 
     # This should only happen if retries where exceeded 
     if response is None:
