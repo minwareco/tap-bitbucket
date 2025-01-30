@@ -215,12 +215,6 @@ def authed_request(source, url, method, data=None, headers=None):
         session.headers.update(headers)
 
     while response is None and retryCount < maxRetries:
-        if retryCount > 0:
-            logger.info(
-                "retryCount = {} elapsed = {:.2f}s, requesting {} {}".format(
-                    retryCount, timer.elapsed(), method, url
-                )
-            )
 
         with metrics.http_request_timer(source) as timer:
             timer.tags['url'] = url
@@ -230,15 +224,21 @@ def authed_request(source, url, method, data=None, headers=None):
 
         if response.status_code in [429, 504]:
             retryCount += 1
-            # exponential backoff + 2-5 second jitter
-            with singer.metrics.Timer('request_backoff', { 'retryCount': retryCount }) as backoff_timer:
-                backoff_timer.tags['backoff_type'] = 'exponential'
-                response = None
-                sleep_time = 5 * (2**retryCount) + randint(2, 5)
-                backoff_timer.tags['sleep_time'] = sleep_time
-                time.sleep(sleep_time)
+            if retryCount < maxRetries:
+                # exponential backoff + 2-5 second jitter
+                with singer.metrics.Timer('request_backoff', { 'retryCount': retryCount }) as backoff_timer:
+                    backoff_timer.tags['backoff_type'] = 'exponential'
+                    response = None
+                    sleep_time = 10 * (2**retryCount) + randint(2, 5)
+                    backoff_timer.tags['sleep_time'] = sleep_time
+                    time.sleep(sleep_time)
 
-            continue
+                    logger.info(
+                        "retryCount = {} elapsed = {:.2f}s, requesting {} {}".format(
+                            retryCount, backoff_timer.elapsed(), method, url
+                        )
+                    )
+                continue
 
         if response.status_code != 200:
             raise_for_error(response, source, url)
