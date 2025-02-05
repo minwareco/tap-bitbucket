@@ -143,7 +143,7 @@ def get_bookmark(state, repo, stream_name, bookmark_key, default_value=None):
 
 def raise_for_error(resp, source, url):
     if resp is None:
-        raise ExceededRetries("Exceeded retries for request. Url: {}".format(url)) 
+        raise ExceededRetries("Exceeded retries for request. Url: {}".format(url))
 
     error_code = resp.status_code
     try:
@@ -207,7 +207,7 @@ def get_repo_metadata(repo_path):
     return repo_cache[repo_path]
 
 def authed_request(source, url, method, data=None, headers=None):
-    
+
     response = None
     retryCount = 0
     maxRetries = 8
@@ -243,7 +243,7 @@ def authed_request(source, url, method, data=None, headers=None):
         if response.status_code != 200:
             raise_for_error(response, source, url)
 
-    # This should only happen if retries where exceeded 
+    # This should only happen if retries where exceeded
     if response is None:
         raise_for_error(response, source, url)
 
@@ -536,8 +536,8 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
 
             offset = 0
             while True:
-                commits = gitLocal.getCommitsFromHead(repo_path, headSha, limit = LOG_PAGE_SIZE,
-                    offset = offset)
+                commits = gitLocal.getCommitsFromHeadPyGit(repo_path, headSha,
+                    limit = LOG_PAGE_SIZE, offset = offset, skipAtCommits=fetchedCommits)
 
                 extraction_time = singer.utils.now()
                 for commit in commits:
