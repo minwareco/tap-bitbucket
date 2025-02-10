@@ -229,7 +229,7 @@ def authed_request(source, url, method, data=None, headers=None):
                 with singer.metrics.Timer('request_backoff', { 'retryCount': retryCount }) as backoff_timer:
                     backoff_timer.tags['backoff_type'] = 'exponential'
                     response = None
-                    sleep_time = 10 * (2**retryCount) + randint(2, 5)
+                    sleep_time = 20 * (2**retryCount) + randint(2, 5)
                     backoff_timer.tags['sleep_time'] = sleep_time
                     time.sleep(sleep_time)
 
