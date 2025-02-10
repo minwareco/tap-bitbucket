@@ -210,7 +210,7 @@ def authed_request(source, url, method, data=None, headers=None):
 
     response = None
     retryCount = 0
-    maxRetries = 8
+    maxRetries = 9
     if headers is not None:
         session.headers.update(headers)
 
