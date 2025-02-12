@@ -19,11 +19,12 @@ import jwt
 from random import randint
 
 from gitlocal import GitLocal
+from gitlocal.logging import SecureLogger
 
 from singer import metadata
 
 session = requests.Session()
-logger = singer.get_logger()
+logger = SecureLogger(singer.get_logger())
 
 repo_cache = {}
 
@@ -892,9 +893,17 @@ def main():
         # Initialize basic auth
         user_name = args.config['user_name']
         access_token = args.config['access_token']
+
+        logger.addToken(access_token)
+
         session.auth = (user_name, access_token)
         config["git_access_token"] = "{}:{}".format(user_name, access_token)
     elif 'jwt_client_key' in args.config:
+        
+        logger.addToken(args.config['jwt_client_key'])
+        logger.addToken(args.config['jwt_subject'])
+        logger.addToken(args.config['jwt_shared_secret'])
+
         jwt_token = generate_jwt_token(
             args.config['jwt_client_key'],
             args.config['jwt_subject'],
@@ -907,6 +916,7 @@ def main():
             {'Content-Type': 'application/x-www-form-urlencoded'})
 
         config["git_access_token"] = "x-token-auth:{}".format(access_token_response['access_token'])
+        logger.addToken(access_token_response)
 
     if args.discover:
         do_discover(config)
