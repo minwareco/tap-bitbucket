@@ -810,7 +810,7 @@ def do_sync(config, state, catalog):
         'workingDir': '/tmp',
     }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
         config['hmac_token'] if 'hmac_token' in config else None,
-        logger=logger.getChild('GitLocal'))
+        logger=logger)
 
     #pylint: disable=too-many-nested-blocks
     for repo in allRepos:
