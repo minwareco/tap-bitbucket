@@ -1,6 +1,9 @@
 #!/usr/bin/env python
 
 from setuptools import setup, find_packages
+import os
+
+UTILS_VERSION = "22f493552c4eb46b2b5a6d98d7acacd9fb7edf68"
 
 setup(name='tap-bitbucket',
       version='1.0.0',
@@ -16,7 +19,10 @@ setup(name='tap-bitbucket',
           'debugpy==1.5.1',
           'PyJWT==2.8.0',
           'cryptography==42.0.1',
-          'gitlocal@git+https://{}@github.com/minwareco/gitlocal.git'.format(os.environ.get("GITHUB_TOKEN", ""))
+          'minware-singer-utils@git+https://{}@github.com/minwareco/minware-singer-utils.git{}'.format(
+              os.environ.get("GITHUB_TOKEN", ""),
+              UTILS_VERSION
+          )
       ],
       extras_require={
           'dev': [

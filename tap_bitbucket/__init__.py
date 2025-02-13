@@ -19,7 +19,7 @@ import jwt
 from random import randint
 
 from gitlocal import GitLocal
-from gitlocal.logging import SecureLogger
+from minware_singer_utils import GitLocal, SecureLogger
 
 from singer import metadata
 
