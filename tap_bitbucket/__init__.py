@@ -915,7 +915,7 @@ def main():
             {'Content-Type': 'application/x-www-form-urlencoded'})
 
         config["git_access_token"] = "x-token-auth:{}".format(access_token_response['access_token'])
-        logger.addToken(access_token_response)
+        logger.addToken(access_token_response['access_token'])
 
     if args.discover:
         do_discover(config)

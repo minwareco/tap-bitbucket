@@ -3,7 +3,7 @@
 from setuptools import setup, find_packages
 import os
 
-UTILS_VERSION = "22f493552c4eb46b2b5a6d98d7acacd9fb7edf68"
+UTILS_VERSION = "81f3a1c44838af09d0f426a1c2f59852b6f1014a"
 
 setup(name='tap-bitbucket',
       version='1.0.0',
