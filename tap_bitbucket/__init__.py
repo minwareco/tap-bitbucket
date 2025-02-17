@@ -18,7 +18,6 @@ import urllib.parse
 import jwt
 from random import randint
 
-from gitlocal import GitLocal
 from minware_singer_utils import GitLocal, SecureLogger
 
 from singer import metadata
