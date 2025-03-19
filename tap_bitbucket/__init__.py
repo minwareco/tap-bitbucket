@@ -628,7 +628,8 @@ def get_pull_request_heads(repo_path):
     ):
         for pr in prs:
             prNumber = pr['id']
-            heads['refs/pull/{}/head'.format(prNumber)] = pr['source']['commit']['hash']
+            if pr.get('source') and pr['source'].get('commit'):
+                heads['refs/pull/{}/head'.format(prNumber)] = pr['source']['commit']['hash']
             if pr.get('merge_commit'):
                 heads['refs/pull/{}/merge'.format(prNumber)] = pr['merge_commit']['hash']
     return heads
