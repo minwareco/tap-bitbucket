@@ -913,10 +913,10 @@ def main():
     if args.discover:
         do_discover(config)
     else:
-        # TODO: Remove this once we have a mechanism to refresh the token
+        # TODO: Remove this early clone once we have a mechanism to refresh the token
         # https://minware.atlassian.net/browse/MW-6112
         # In cases where there was a lot of API data to ingest,
-        # the token was expriing before we used it for cloning the repos
+        # the token was expiring before we used it for cloning the repos
 
         # Initialize GitLocal early
         domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
