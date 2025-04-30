@@ -913,10 +913,10 @@ def main():
     if args.discover:
         do_discover(config)
     else:
-        # TODO: Remove this once we have a mechanism to refresh the token
+        # TODO: Remove this early clone once we have a mechanism to refresh the token
         # https://minware.atlassian.net/browse/MW-6112
         # In cases where there was a lot of API data to ingest,
-        # the token was expriing before we used it for cloning the repos
+        # the token was expiring before we used it for cloning the repos
 
         # Initialize GitLocal early
         domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
@@ -927,11 +927,14 @@ def main():
             config['hmac_token'] if 'hmac_token' in config else None,
             logger=logger)
 
-        # Clone repositories early
-        repositories = list(filter(None, config['repository'].split(' ')))
-        for repo in repositories:
-            logger.info("Cloning repository: %s", repo)
-            git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
+        # Clone repositories early if this is a files catalog
+        # the other tap doesn't need this
+        if args.properties_path and "files-catalog" in args.properties_path:
+            logger.info("Cloning repositories for files catalog")
+            repositories = list(filter(None, config['repository'].split(' ')))
+            for repo in repositories:
+                logger.info("Cloning repository: %s", repo)
+                git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
 
         catalog = args.properties if args.properties else get_catalog()
         do_sync(config, args.state, catalog, git_local)
