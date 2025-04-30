@@ -770,7 +770,7 @@ SUB_STREAMS = {
     'commit_files': ['refs']
 }
 
-def do_sync(config, state, catalog):
+def do_sync(config, state, catalog, gitLocal):
     global process_globals
 
     start_date = config['start_date'] if 'start_date' in config else None
@@ -803,14 +803,6 @@ def do_sync(config, state, catalog):
             allRepos.extend(orgRepos)
         else:
             allRepos.append(repo)
-
-    domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
-    gitLocal = GitLocal({
-        'access_token': config["git_access_token"],
-        'workingDir': '/tmp',
-    }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
-        config['hmac_token'] if 'hmac_token' in config else None,
-        logger=logger)
 
     #pylint: disable=too-many-nested-blocks
     for repo in allRepos:
@@ -921,8 +913,28 @@ def main():
     if args.discover:
         do_discover(config)
     else:
+        # TODO: Remove this once we have a mechanism to refresh the token
+        # https://minware.atlassian.net/browse/MW-6112
+        # In cases where there was a lot of API data to ingest,
+        # the token was expriing before we used it for cloning the repos
+
+        # Initialize GitLocal early
+        domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
+        git_local = GitLocal({
+            'access_token': config["git_access_token"],
+            'workingDir': '/tmp',
+        }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
+            config['hmac_token'] if 'hmac_token' in config else None,
+            logger=logger)
+
+        # Clone repositories early
+        repositories = list(filter(None, config['repository'].split(' ')))
+        for repo in repositories:
+            logger.info("Cloning repository: %s", repo)
+            git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
+
         catalog = args.properties if args.properties else get_catalog()
-        do_sync(config, args.state, catalog)
+        do_sync(config, args.state, catalog, git_local)
 
 if __name__ == '__main__':
     main()
