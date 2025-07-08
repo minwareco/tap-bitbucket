@@ -17,8 +17,27 @@ import difflib
 import urllib.parse
 import jwt
 from random import randint
+import sys
 
-from minware_singer_utils import GitLocal, SecureLogger
+from minware_singer_utils import (
+    GitLocal, 
+    SecureLogger,
+    BadCredentialsException,
+    AuthException,
+    NotFoundException,
+    BadRequestException,
+    InternalServerError,
+    UnprocessableError,
+    NotModifiedError,
+    MovedPermanentlyError,
+    ConflictError,
+    RateLimitExceeded,
+    SingerException,
+    get_exit_code_for_exception,
+    handle_singer_exception,
+    SingerExceptionHandler
+)
+
 
 from singer import metadata
 
@@ -184,11 +203,13 @@ def get_orgs():
     return orgs
 
 def get_repos_for_org(org):
+    logger.info("Getting repos for org: {}".format(org))
     orgRepos = []
     for repos in authed_get_all_pages(
         'repositories',
         f'https://api.bitbucket.org/2.0/repositories/{org}?pagelen=100'
     ):
+        logger.info("repos = {}".format(json.dumps(repos, indent = 4)))
         for repo in repos:
             # Preserve the case used for the org name originally
             orgRepos.append(org + '/' + repo['slug'])
@@ -434,37 +455,42 @@ def sync_all_commits(schema, repo_path, state, mdata, start_date):
     return state
 
 
-def get_commit_detail_local(commit, gitLocalRepoPath, gitLocal):
+def get_commit_detail_local(commit, gitLocalRepoPath, gitLocal, commits_only=False):
     try:
-        changes = gitLocal.getCommitDiff(gitLocalRepoPath, commit['sha'])
-        commit['files'] = changes
+        if commits_only:
+            # In commit-only mode, skip file diff processing and return empty files list
+            commit['files'] = []
+        else:
+            changes = gitLocal.getCommitDiff(gitLocalRepoPath, commit['sha'])
+            commit['files'] = changes
     except Exception as e:
         # This generally shouldn't happen since we've already fetched and checked out the head
         # commit successfully, so it probably indicates some sort of system error. Just let it
         # bubbl eup for now.
         raise e
 
-def get_commit_changes(commit, gitLocalRepoPath, gitLocal):
-    get_commit_detail_local(commit, gitLocalRepoPath, gitLocal)
+def get_commit_changes(commit, gitLocalRepoPath, gitLocal, commits_only=False):
+    get_commit_detail_local(commit, gitLocalRepoPath, gitLocal, commits_only)
     commit['_sdc_repository'] = gitLocalRepoPath
     commit['id'] = '{}/{}'.format(gitLocalRepoPath, commit['sha'])
     return commit
 
-async def getChangedfilesForCommits(commits, gitLocalRepoPath, gitLocal):
+async def getChangedfilesForCommits(commits, gitLocalRepoPath, gitLocal, commits_only=False):
     coros = []
     for commit in commits:
-        changesCoro = asyncio.to_thread(get_commit_changes, commit, gitLocalRepoPath, gitLocal)
+        changesCoro = asyncio.to_thread(get_commit_changes, commit, gitLocalRepoPath, gitLocal, commits_only)
         coros.append(changesCoro)
     results = await asyncio.gather(*coros)
     return results
 
-def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal, heads):
-    bookmark = get_bookmark(state, repo_path, "commit_files", "since", start_date)
+def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal, heads, commits_only=False):
+    stream_name = 'commit_files_meta' if commits_only else 'commit_files'
+    bookmark = get_bookmark(state, repo_path, stream_name, "since", start_date)
     if not bookmark:
         bookmark = '1970-01-01'
 
     # Get the set of all commits we have fetched previously
-    fetchedCommits = get_bookmark(state, repo_path, "commit_files", "fetchedCommits")
+    fetchedCommits = get_bookmark(state, repo_path, stream_name, "fetchedCommits")
     if not fetchedCommits:
         fetchedCommits = {}
     else:
@@ -591,13 +617,13 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
             # Slice off the queue to avoid memory leaks
             curQ = commitQ[0:BATCH_SIZE]
             commitQ = commitQ[BATCH_SIZE:]
-            changedFileList = asyncio.run(getChangedfilesForCommits(curQ, repo_path, gitLocal))
+            changedFileList = asyncio.run(getChangedfilesForCommits(curQ, repo_path, gitLocal, commits_only))
             for commitfiles in changedFileList:
                 with singer.Transformer() as transformer:
-                    rec = transformer.transform(commitfiles, schemas['commit_files'],
+                    rec = transformer.transform(commitfiles, schemas[stream_name],
                         metadata=metadata.to_map(mdata))
                 counter.increment()
-                singer.write_record('commit_files', rec, time_extracted=extraction_time)
+                singer.write_record(stream_name, rec, time_extracted=extraction_time)
 
             finishedCount += BATCH_SIZE
             if i % (BATCH_SIZE * PRINT_INTERVAL) == 0:
@@ -612,7 +638,7 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
 
     # Don't write until the end so that we don't record fetchedCommits if we fail and never get
     # their parents.
-    singer.write_bookmark(state, repo_path, 'commit_files', {
+    singer.write_bookmark(state, repo_path, stream_name, {
         'since': singer.utils.strftime(extraction_time),
         'fetchedCommits': fetchedCommits
     })
@@ -775,6 +801,7 @@ def do_sync(config, state, catalog, gitLocal):
 
     start_date = config['start_date'] if 'start_date' in config else None
     process_globals = config['process_globals'] if 'process_globals' in config else True
+    commits_only = config.get('commits_only', False)
 
     logger.info('Process globals = {}'.format(str(process_globals)))
 
@@ -844,12 +871,12 @@ def do_sync(config, state, catalog, gitLocal):
                                                 sub_stream['key_properties'])
 
                     # sync stream and its sub streams
-                    if stream_id == 'commit_files':
+                    if stream_id == 'commit_files' or stream_id == 'commit_files_meta':
                         heads = get_pull_request_heads(repo)
                         # We don't need to also get open branch heads here becuase those are
                         # included in the git clone --mirror, though PR heads for merged PRs are
                         # not included.
-                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads)
+                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only)
                     else:
                         state = sync_func(stream_schemas, org, repo, state, mdata, start_date)
 
@@ -878,66 +905,78 @@ def generate_jwt_token(issuer, subject, secret):
 
 @singer.utils.handle_top_exception(logger)
 def main():
-    args = get_args()
+    try:
+        args = get_args()
 
-    config = args.config
-    if 'user_name' in args.config:
-        # Initialize basic auth
-        user_name = args.config['user_name']
-        access_token = args.config['access_token']
+        config = args.config
+        if 'user_name' in args.config:
+            # Initialize basic auth
+            user_name = args.config['user_name']
+            access_token = args.config['access_token']
 
-        logger.addToken(access_token)
+            logger.addToken(access_token)
 
-        session.auth = (user_name, access_token)
-        config["git_access_token"] = "{}:{}".format(user_name, access_token)
-    elif 'jwt_client_key' in args.config:
+            session.auth = (user_name, access_token)
+            config["git_access_token"] = "{}:{}".format(user_name, access_token)
+        elif 'jwt_client_key' in args.config:
+            
+            logger.addToken(args.config['jwt_client_key'])
+            logger.addToken(args.config['jwt_subject'])
+            logger.addToken(args.config['jwt_shared_secret'])
+
+            jwt_token = generate_jwt_token(
+                args.config['jwt_client_key'],
+                args.config['jwt_subject'],
+                args.config['jwt_shared_secret'])
+            session.headers.update({'authorization': 'JWT ' + jwt_token})
+            access_token_response = authed_post(
+                'access token request',
+                'https://bitbucket.org/site/oauth2/access_token',
+                {'grant_type': 'urn:bitbucket:oauth2:jwt'},
+                {'Content-Type': 'application/x-www-form-urlencoded'})
+
+            config["git_access_token"] = "x-token-auth:{}".format(access_token_response['access_token'])
+            logger.addToken(access_token_response['access_token'])
+
+        if args.discover:
+            do_discover(config)
+        else:
+            # TODO: Remove this early clone once we have a mechanism to refresh the token
+            # https://minware.atlassian.net/browse/MW-6112
+            # In cases where there was a lot of API data to ingest,
+            # the token was expiring before we used it for cloning the repos
+
+            # Initialize GitLocal early
+            commits_only = config.get('commits_only', False)
+            domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
+            git_local = GitLocal({
+                'access_token': config["git_access_token"],
+                'workingDir': '/tmp',
+            }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
+                config['hmac_token'] if 'hmac_token' in config else None,
+                logger=logger,
+                commitsOnly=commits_only)
+
+            # Clone repositories early if this is a files catalog
+            # the other tap doesn't need this
+            if args.properties_path and "files-catalog" in args.properties_path:
+                logger.info("Cloning repositories for files catalog")
+                repositories = list(filter(None, config['repository'].split(' ')))
+                for repo in repositories:
+                    logger.info("Cloning repository: %s", repo)
+                    git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
+
+            catalog = args.properties if args.properties else get_catalog()
+            do_sync(config, args.state, catalog, git_local)
+    except Exception as e:
+        # Determine exit code based on exception type
+        exit_code = 4 if isinstance(e, (BadCredentialsException, AuthException)) else 1
         
-        logger.addToken(args.config['jwt_client_key'])
-        logger.addToken(args.config['jwt_subject'])
-        logger.addToken(args.config['jwt_shared_secret'])
-
-        jwt_token = generate_jwt_token(
-            args.config['jwt_client_key'],
-            args.config['jwt_subject'],
-            args.config['jwt_shared_secret'])
-        session.headers.update({'authorization': 'JWT ' + jwt_token})
-        access_token_response = authed_post(
-            'access token request',
-            'https://bitbucket.org/site/oauth2/access_token',
-            {'grant_type': 'urn:bitbucket:oauth2:jwt'},
-            {'Content-Type': 'application/x-www-form-urlencoded'})
-
-        config["git_access_token"] = "x-token-auth:{}".format(access_token_response['access_token'])
-        logger.addToken(access_token_response['access_token'])
-
-    if args.discover:
-        do_discover(config)
-    else:
-        # TODO: Remove this early clone once we have a mechanism to refresh the token
-        # https://minware.atlassian.net/browse/MW-6112
-        # In cases where there was a lot of API data to ingest,
-        # the token was expiring before we used it for cloning the repos
-
-        # Initialize GitLocal early
-        domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
-        git_local = GitLocal({
-            'access_token': config["git_access_token"],
-            'workingDir': '/tmp',
-        }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
-            config['hmac_token'] if 'hmac_token' in config else None,
-            logger=logger)
-
-        # Clone repositories early if this is a files catalog
-        # the other tap doesn't need this
-        if args.properties_path and "files-catalog" in args.properties_path:
-            logger.info("Cloning repositories for files catalog")
-            repositories = list(filter(None, config['repository'].split(' ')))
-            for repo in repositories:
-                logger.info("Cloning repository: %s", repo)
-                git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
-
-        catalog = args.properties if args.properties else get_catalog()
-        do_sync(config, args.state, catalog, git_local)
+        # Log the error
+        logger.critical(str(e))
+        
+        # Exit with appropriate code
+        sys.exit(exit_code)
 
 if __name__ == '__main__':
     main()
