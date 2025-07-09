@@ -797,7 +797,6 @@ SYNC_FUNCTIONS = {
 
 SUB_STREAMS = {
     'pull_requests': ['pull_request_comments'],
-    'commit_files': ['refs'],
     'commit_files_meta': ['refs']
 }
 
