@@ -455,30 +455,26 @@ def sync_all_commits(schema, repo_path, state, mdata, start_date):
     return state
 
 
-def get_commit_detail_local(commit, gitLocalRepoPath, gitLocal, commits_only=False):
+def get_commit_detail_local(commit, gitLocalRepoPath, gitLocal):
     try:
-        if commits_only:
-            # In commit-only mode, skip file diff processing and return empty files list
-            commit['files'] = []
-        else:
-            changes = gitLocal.getCommitDiff(gitLocalRepoPath, commit['sha'])
-            commit['files'] = changes
+        changes = gitLocal.getCommitDiff(gitLocalRepoPath, commit['sha'])
+        commit['files'] = changes
     except Exception as e:
         # This generally shouldn't happen since we've already fetched and checked out the head
         # commit successfully, so it probably indicates some sort of system error. Just let it
         # bubbl eup for now.
         raise e
 
-def get_commit_changes(commit, gitLocalRepoPath, gitLocal, commits_only=False):
-    get_commit_detail_local(commit, gitLocalRepoPath, gitLocal, commits_only)
+def get_commit_changes(commit, gitLocalRepoPath, gitLocal):
+    get_commit_detail_local(commit, gitLocalRepoPath, gitLocal)
     commit['_sdc_repository'] = gitLocalRepoPath
     commit['id'] = '{}/{}'.format(gitLocalRepoPath, commit['sha'])
     return commit
 
-async def getChangedfilesForCommits(commits, gitLocalRepoPath, gitLocal, commits_only=False):
+async def getChangedfilesForCommits(commits, gitLocalRepoPath, gitLocal):
     coros = []
     for commit in commits:
-        changesCoro = asyncio.to_thread(get_commit_changes, commit, gitLocalRepoPath, gitLocal, commits_only)
+        changesCoro = asyncio.to_thread(get_commit_changes, commit, gitLocalRepoPath, gitLocal)
         coros.append(changesCoro)
     results = await asyncio.gather(*coros)
     return results
@@ -617,7 +613,14 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
             # Slice off the queue to avoid memory leaks
             curQ = commitQ[0:BATCH_SIZE]
             commitQ = commitQ[BATCH_SIZE:]
-            changedFileList = asyncio.run(getChangedfilesForCommits(curQ, repo_path, gitLocal, commits_only))
+            if commits_only:
+                for commit in curQ:
+                    commit['files'] = []
+                    commit['_sdc_repository'] = repo_path
+                    commit['id'] = '{}/{}'.format(repo_path, commit['sha'])
+                changedFileList = curQ
+            else:
+                changedFileList = asyncio.run(getChangedfilesForCommits(curQ, repo_path, gitLocal))
             for commitfiles in changedFileList:
                 with singer.Transformer() as transformer:
                     rec = transformer.transform(commitfiles, schemas[stream_name],
@@ -787,13 +790,15 @@ def get_stream_from_catalog(stream_id, catalog):
 SYNC_FUNCTIONS = {
     'commits': sync_all_commits,
     'commit_files': sync_all_commit_files,
+    'commit_files_meta': sync_all_commit_files,
     'pull_requests': sync_all_pull_requests,
     'repositories': sync_all_repositories,
 }
 
 SUB_STREAMS = {
     'pull_requests': ['pull_request_comments'],
-    'commit_files': ['refs']
+    'commit_files': ['refs'],
+    'commit_files_meta': ['refs']
 }
 
 def do_sync(config, state, catalog, gitLocal):
@@ -801,7 +806,6 @@ def do_sync(config, state, catalog, gitLocal):
 
     start_date = config['start_date'] if 'start_date' in config else None
     process_globals = config['process_globals'] if 'process_globals' in config else True
-    commits_only = config.get('commits_only', False)
 
     logger.info('Process globals = {}'.format(str(process_globals)))
 
@@ -876,6 +880,7 @@ def do_sync(config, state, catalog, gitLocal):
                         # We don't need to also get open branch heads here becuase those are
                         # included in the git clone --mirror, though PR heads for merged PRs are
                         # not included.
+                        commits_only = stream_id == 'commit_files_meta'
                         state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only)
                     else:
                         state = sync_func(stream_schemas, org, repo, state, mdata, start_date)
@@ -946,8 +951,11 @@ def main():
             # In cases where there was a lot of API data to ingest,
             # the token was expiring before we used it for cloning the repos
 
+            # Get catalog and selected streams for GitLocal initialization
+            catalog = args.properties if args.properties else get_catalog()
+            selected_stream_ids = get_selected_streams(catalog)
+            
             # Initialize GitLocal early
-            commits_only = config.get('commits_only', False)
             domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
             git_local = GitLocal({
                 'access_token': config["git_access_token"],
@@ -955,7 +963,7 @@ def main():
             }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
                 config['hmac_token'] if 'hmac_token' in config else None,
                 logger=logger,
-                commitsOnly=commits_only)
+                commitsOnly='commit_files_meta' in selected_stream_ids)
 
             # Clone repositories early if this is a files catalog
             # the other tap doesn't need this
@@ -966,7 +974,6 @@ def main():
                     logger.info("Cloning repository: %s", repo)
                     git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
 
-            catalog = args.properties if args.properties else get_catalog()
             do_sync(config, args.state, catalog, git_local)
     except Exception as e:
         # Determine exit code based on exception type
