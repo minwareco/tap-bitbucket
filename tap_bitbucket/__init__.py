@@ -19,24 +19,7 @@ import jwt
 from random import randint
 import sys
 
-from minware_singer_utils import (
-    GitLocal, 
-    SecureLogger,
-    BadCredentialsException,
-    AuthException,
-    NotFoundException,
-    BadRequestException,
-    InternalServerError,
-    UnprocessableError,
-    NotModifiedError,
-    MovedPermanentlyError,
-    ConflictError,
-    RateLimitExceeded,
-    SingerException,
-    get_exit_code_for_exception,
-    handle_singer_exception,
-    SingerExceptionHandler
-)
+from minware_singer_utils import GitLocal, SecureLogger
 
 
 from singer import metadata
@@ -52,6 +35,7 @@ REQUIRED_CONFIG_KEYS_JWT = ['start_date', 'jwt_client_key', 'jwt_shared_secret',
 KEY_PROPERTIES = {
     'commits': ['id'],
     'commit_files': ['id'],
+    'commit_files_meta': ['id'],
     'pull_requests': ['id'],
     'pull_request_comments': ['id'],
     'refs': ['id'],
@@ -526,8 +510,8 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
                     process.memory_info().rss))
             headSha = heads[headRef]
 
-            # Emit the ref record as well if it's not for a pull request
-            if not ('refs/pull' in headRef):
+            # Emit the ref record as well if it's not for a pull request (only in regular mode, not commit-only)
+            if not ('refs/pull' in headRef) and not commits_only:
                 refRecord = {
                     'id': '{}/{}'.format(repo_path, headRef),
                     '_sdc_repository': repo_path,
@@ -797,7 +781,7 @@ SYNC_FUNCTIONS = {
 
 SUB_STREAMS = {
     'pull_requests': ['pull_request_comments'],
-    'commit_files_meta': ['refs']
+    'commit_files': ['refs']
 }
 
 def do_sync(config, state, catalog, gitLocal):
@@ -838,6 +822,8 @@ def do_sync(config, state, catalog, gitLocal):
     for repo in allRepos:
         logger.info("Starting sync of repository: %s", repo)
 
+        commits_only = 'commit_files_meta' in selected_stream_ids
+
         org = repo.split('/')[0]
 
         for stream in catalog['streams']:
@@ -859,7 +845,13 @@ def do_sync(config, state, catalog, gitLocal):
 
                 # sync stream
                 if not sub_stream_ids:
-                    state = sync_func(stream_schema, repo, state, mdata, start_date)
+                    if stream_id == 'commit_files' or stream_id == 'commit_files_meta':
+                        commits_only = stream_id == 'commit_files_meta'
+                        stream_schemas = {stream_id: stream_schema}
+                        heads = get_pull_request_heads(repo)
+                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only)
+                    else:
+                        state = sync_func(stream_schema, repo, state, mdata, start_date)
 
                 # handle streams with sub streams
                 else:
