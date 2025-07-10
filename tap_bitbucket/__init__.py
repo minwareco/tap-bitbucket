@@ -17,10 +17,7 @@ import difflib
 import urllib.parse
 import jwt
 from random import randint
-import sys
-
 from minware_singer_utils import GitLocal, SecureLogger
-
 
 from singer import metadata
 
