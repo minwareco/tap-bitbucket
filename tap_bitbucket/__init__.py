@@ -191,7 +191,6 @@ def get_repos_for_org(org):
         'repositories',
         f'https://api.bitbucket.org/2.0/repositories/{org}?pagelen=100'
     ):
-        logger.info("repos = {}".format(json.dumps(repos, indent = 4)))
         for repo in repos:
             # Preserve the case used for the org name originally
             orgRepos.append(org + '/' + repo['slug'])
@@ -908,80 +907,71 @@ def generate_jwt_token(issuer, subject, secret):
 
 @singer.utils.handle_top_exception(logger)
 def main():
-    try:
-        args = get_args()
 
-        config = args.config
-        if 'user_name' in args.config:
-            # Initialize basic auth
-            user_name = args.config['user_name']
-            access_token = args.config['access_token']
+    args = get_args()
 
-            logger.addToken(access_token)
+    config = args.config
+    if 'user_name' in args.config:
+        # Initialize basic auth
+        user_name = args.config['user_name']
+        access_token = args.config['access_token']
 
-            session.auth = (user_name, access_token)
-            config["git_access_token"] = "{}:{}".format(user_name, access_token)
-        elif 'jwt_client_key' in args.config:
-            
-            logger.addToken(args.config['jwt_client_key'])
-            logger.addToken(args.config['jwt_subject'])
-            logger.addToken(args.config['jwt_shared_secret'])
+        logger.addToken(access_token)
 
-            jwt_token = generate_jwt_token(
-                args.config['jwt_client_key'],
-                args.config['jwt_subject'],
-                args.config['jwt_shared_secret'])
-            session.headers.update({'authorization': 'JWT ' + jwt_token})
-            access_token_response = authed_post(
-                'access token request',
-                'https://bitbucket.org/site/oauth2/access_token',
-                {'grant_type': 'urn:bitbucket:oauth2:jwt'},
-                {'Content-Type': 'application/x-www-form-urlencoded'})
-
-            config["git_access_token"] = "x-token-auth:{}".format(access_token_response['access_token'])
-            logger.addToken(access_token_response['access_token'])
-
-        if args.discover:
-            do_discover(config)
-        else:
-            # TODO: Remove this early clone once we have a mechanism to refresh the token
-            # https://minware.atlassian.net/browse/MW-6112
-            # In cases where there was a lot of API data to ingest,
-            # the token was expiring before we used it for cloning the repos
-
-            # Get catalog and selected streams for GitLocal initialization
-            catalog = args.properties if args.properties else get_catalog()
-            selected_stream_ids = get_selected_streams(catalog)
-            
-            # Initialize GitLocal early
-            domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
-            git_local = GitLocal({
-                'access_token': config["git_access_token"],
-                'workingDir': '/tmp',
-            }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
-                config['hmac_token'] if 'hmac_token' in config else None,
-                logger=logger,
-                commitsOnly='commit_files_meta' in selected_stream_ids)
-
-            # Clone repositories early if this is a files catalog
-            # the other tap doesn't need this
-            if args.properties_path and "files-catalog" in args.properties_path:
-                logger.info("Cloning repositories for files catalog")
-                repositories = list(filter(None, config['repository'].split(' ')))
-                for repo in repositories:
-                    logger.info("Cloning repository: %s", repo)
-                    git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
-
-            do_sync(config, args.state, catalog, git_local)
-    except Exception as e:
-        # Determine exit code based on exception type
-        exit_code = 4 if isinstance(e, (BadCredentialsException, AuthException)) else 1
+        session.auth = (user_name, access_token)
+        config["git_access_token"] = "{}:{}".format(user_name, access_token)
+    elif 'jwt_client_key' in args.config:
         
-        # Log the error
-        logger.critical(str(e))
+        logger.addToken(args.config['jwt_client_key'])
+        logger.addToken(args.config['jwt_subject'])
+        logger.addToken(args.config['jwt_shared_secret'])
+
+        jwt_token = generate_jwt_token(
+            args.config['jwt_client_key'],
+            args.config['jwt_subject'],
+            args.config['jwt_shared_secret'])
+        session.headers.update({'authorization': 'JWT ' + jwt_token})
+        access_token_response = authed_post(
+            'access token request',
+            'https://bitbucket.org/site/oauth2/access_token',
+            {'grant_type': 'urn:bitbucket:oauth2:jwt'},
+            {'Content-Type': 'application/x-www-form-urlencoded'})
+
+        config["git_access_token"] = "x-token-auth:{}".format(access_token_response['access_token'])
+        logger.addToken(access_token_response['access_token'])
+
+    if args.discover:
+        do_discover(config)
+    else:
+        # TODO: Remove this early clone once we have a mechanism to refresh the token
+        # https://minware.atlassian.net/browse/MW-6112
+        # In cases where there was a lot of API data to ingest,
+        # the token was expiring before we used it for cloning the repos
+
+        # Get catalog and selected streams for GitLocal initialization
+        catalog = args.properties if args.properties else get_catalog()
+        selected_stream_ids = get_selected_streams(catalog)
         
-        # Exit with appropriate code
-        sys.exit(exit_code)
+        # Initialize GitLocal early
+        domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
+        git_local = GitLocal({
+            'access_token': config["git_access_token"],
+            'workingDir': '/tmp',
+        }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
+            config['hmac_token'] if 'hmac_token' in config else None,
+            logger=logger,
+            commitsOnly='commit_files_meta' in selected_stream_ids)
+
+        # Clone repositories early if this is a files catalog
+        # the other tap doesn't need this
+        if args.properties_path and "files-catalog" in args.properties_path:
+            logger.info("Cloning repositories for files catalog")
+            repositories = list(filter(None, config['repository'].split(' ')))
+            for repo in repositories:
+                logger.info("Cloning repository: %s", repo)
+                git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
+
+        do_sync(config, args.state, catalog, git_local)
 
 if __name__ == '__main__':
     main()
