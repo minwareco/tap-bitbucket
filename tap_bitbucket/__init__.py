@@ -17,6 +17,8 @@ import difflib
 import urllib.parse
 import jwt
 from random import randint
+import sys
+
 from minware_singer_utils import GitLocal, SecureLogger
 
 from singer import metadata
@@ -184,7 +186,6 @@ def get_orgs():
     return orgs
 
 def get_repos_for_org(org):
-    logger.info("Getting repos for org: {}".format(org))
     orgRepos = []
     for repos in authed_get_all_pages(
         'repositories',
@@ -460,7 +461,7 @@ async def getChangedfilesForCommits(commits, gitLocalRepoPath, gitLocal):
     results = await asyncio.gather(*coros)
     return results
 
-def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal, heads, commits_only=False):
+def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal, heads, commits_only=False, selected_stream_ids=None):
     stream_name = 'commit_files_meta' if commits_only else 'commit_files'
     bookmark = get_bookmark(state, repo_path, stream_name, "since", start_date)
     if not bookmark:
@@ -495,7 +496,7 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
     count = 0
     # The large majority of PRs are less than this many commits
     LOG_PAGE_SIZE = 10000
-    with metrics.record_counter('commit_files') as counter:
+    with metrics.record_counter(stream_name) as counter:
         # First, walk through all the heads and queue up all the commits that need to be imported
         commitQ = []
 
@@ -506,9 +507,8 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
                 logger.info('Processed heads {}/{}, {} bytes'.format(count, len(heads),
                     process.memory_info().rss))
             headSha = heads[headRef]
-
-            # Emit the ref record as well if it's not for a pull request (only in regular mode, not commit-only)
-            if not ('refs/pull' in headRef) and not commits_only:
+            # Emit the ref record as well if it's not for a pull request (only if refs stream is selected)
+            if not ('refs/pull' in headRef) and selected_stream_ids and 'refs' in selected_stream_ids:
                 refRecord = {
                     'id': '{}/{}'.format(repo_path, headRef),
                     '_sdc_repository': repo_path,
@@ -757,8 +757,14 @@ def get_selected_streams(catalog):
     '''
     selected_streams = []
     for stream in catalog['streams']:
+        stream_metadata = stream['metadata']
         if stream['schema'].get('selected', False):
             selected_streams.append(stream['tap_stream_id'])
+        else:
+            for entry in stream_metadata:
+                # stream metadata will have empty breadcrumb
+                if not entry['breadcrumb'] and entry['metadata'].get('selected',None):
+                    selected_streams.append(stream['tap_stream_id'])
 
     return selected_streams
 
@@ -845,8 +851,12 @@ def do_sync(config, state, catalog, gitLocal):
                     if stream_id == 'commit_files' or stream_id == 'commit_files_meta':
                         commits_only = stream_id == 'commit_files_meta'
                         stream_schemas = {stream_id: stream_schema}
+                        # Add refs schema if refs stream is selected
+                        if 'refs' in selected_stream_ids:
+                            refs_stream = get_stream_from_catalog('refs', catalog)
+                            stream_schemas['refs'] = refs_stream['schema']
                         heads = get_pull_request_heads(repo)
-                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only)
+                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only, selected_stream_ids)
                     else:
                         state = sync_func(stream_schema, repo, state, mdata, start_date)
 
@@ -869,7 +879,7 @@ def do_sync(config, state, catalog, gitLocal):
                         # included in the git clone --mirror, though PR heads for merged PRs are
                         # not included.
                         commits_only = stream_id == 'commit_files_meta'
-                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only)
+                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only, selected_stream_ids)
                     else:
                         state = sync_func(stream_schemas, org, repo, state, mdata, start_date)
 
