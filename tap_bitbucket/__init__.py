@@ -17,6 +17,7 @@ import difflib
 import urllib.parse
 import jwt
 from random import randint
+import sys
 
 from minware_singer_utils import GitLocal, SecureLogger
 
@@ -33,6 +34,7 @@ REQUIRED_CONFIG_KEYS_JWT = ['start_date', 'jwt_client_key', 'jwt_shared_secret',
 KEY_PROPERTIES = {
     'commits': ['id'],
     'commit_files': ['id'],
+    'commit_files_meta': ['id'],
     'pull_requests': ['id'],
     'pull_request_comments': ['id'],
     'refs': ['id'],
@@ -458,13 +460,14 @@ async def getChangedfilesForCommits(commits, gitLocalRepoPath, gitLocal):
     results = await asyncio.gather(*coros)
     return results
 
-def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal, heads):
-    bookmark = get_bookmark(state, repo_path, "commit_files", "since", start_date)
+def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal, heads, commits_only=False, selected_stream_ids=None):
+    stream_name = 'commit_files_meta' if commits_only else 'commit_files'
+    bookmark = get_bookmark(state, repo_path, stream_name, "since", start_date)
     if not bookmark:
         bookmark = '1970-01-01'
 
     # Get the set of all commits we have fetched previously
-    fetchedCommits = get_bookmark(state, repo_path, "commit_files", "fetchedCommits")
+    fetchedCommits = get_bookmark(state, repo_path, stream_name, "fetchedCommits")
     if not fetchedCommits:
         fetchedCommits = {}
     else:
@@ -492,7 +495,7 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
     count = 0
     # The large majority of PRs are less than this many commits
     LOG_PAGE_SIZE = 10000
-    with metrics.record_counter('commit_files') as counter:
+    with metrics.record_counter(stream_name) as counter:
         # First, walk through all the heads and queue up all the commits that need to be imported
         commitQ = []
 
@@ -503,9 +506,8 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
                 logger.info('Processed heads {}/{}, {} bytes'.format(count, len(heads),
                     process.memory_info().rss))
             headSha = heads[headRef]
-
-            # Emit the ref record as well if it's not for a pull request
-            if not ('refs/pull' in headRef):
+            # Emit the ref record as well if it's not for a pull request (only if refs stream is selected)
+            if not ('refs/pull' in headRef) and selected_stream_ids and 'refs' in selected_stream_ids:
                 refRecord = {
                     'id': '{}/{}'.format(repo_path, headRef),
                     '_sdc_repository': repo_path,
@@ -591,13 +593,20 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
             # Slice off the queue to avoid memory leaks
             curQ = commitQ[0:BATCH_SIZE]
             commitQ = commitQ[BATCH_SIZE:]
-            changedFileList = asyncio.run(getChangedfilesForCommits(curQ, repo_path, gitLocal))
+            if commits_only:
+                for commit in curQ:
+                    commit['files'] = []
+                    commit['_sdc_repository'] = repo_path
+                    commit['id'] = '{}/{}'.format(repo_path, commit['sha'])
+                changedFileList = curQ
+            else:
+                changedFileList = asyncio.run(getChangedfilesForCommits(curQ, repo_path, gitLocal))
             for commitfiles in changedFileList:
                 with singer.Transformer() as transformer:
-                    rec = transformer.transform(commitfiles, schemas['commit_files'],
+                    rec = transformer.transform(commitfiles, schemas[stream_name],
                         metadata=metadata.to_map(mdata))
                 counter.increment()
-                singer.write_record('commit_files', rec, time_extracted=extraction_time)
+                singer.write_record(stream_name, rec, time_extracted=extraction_time)
 
             finishedCount += BATCH_SIZE
             if i % (BATCH_SIZE * PRINT_INTERVAL) == 0:
@@ -612,7 +621,7 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
 
     # Don't write until the end so that we don't record fetchedCommits if we fail and never get
     # their parents.
-    singer.write_bookmark(state, repo_path, 'commit_files', {
+    singer.write_bookmark(state, repo_path, stream_name, {
         'since': singer.utils.strftime(extraction_time),
         'fetchedCommits': fetchedCommits
     })
@@ -747,8 +756,14 @@ def get_selected_streams(catalog):
     '''
     selected_streams = []
     for stream in catalog['streams']:
+        stream_metadata = stream['metadata']
         if stream['schema'].get('selected', False):
             selected_streams.append(stream['tap_stream_id'])
+        else:
+            for entry in stream_metadata:
+                # stream metadata will have empty breadcrumb
+                if not entry['breadcrumb'] and entry['metadata'].get('selected',None):
+                    selected_streams.append(stream['tap_stream_id'])
 
     return selected_streams
 
@@ -761,6 +776,7 @@ def get_stream_from_catalog(stream_id, catalog):
 SYNC_FUNCTIONS = {
     'commits': sync_all_commits,
     'commit_files': sync_all_commit_files,
+    'commit_files_meta': sync_all_commit_files,
     'pull_requests': sync_all_pull_requests,
     'repositories': sync_all_repositories,
 }
@@ -808,6 +824,8 @@ def do_sync(config, state, catalog, gitLocal):
     for repo in allRepos:
         logger.info("Starting sync of repository: %s", repo)
 
+        commits_only = 'commit_files_meta' in selected_stream_ids
+
         org = repo.split('/')[0]
 
         for stream in catalog['streams']:
@@ -829,7 +847,17 @@ def do_sync(config, state, catalog, gitLocal):
 
                 # sync stream
                 if not sub_stream_ids:
-                    state = sync_func(stream_schema, repo, state, mdata, start_date)
+                    if stream_id == 'commit_files' or stream_id == 'commit_files_meta':
+                        commits_only = stream_id == 'commit_files_meta'
+                        stream_schemas = {stream_id: stream_schema}
+                        # Add refs schema if refs stream is selected
+                        if 'refs' in selected_stream_ids:
+                            refs_stream = get_stream_from_catalog('refs', catalog)
+                            stream_schemas['refs'] = refs_stream['schema']
+                        heads = get_pull_request_heads(repo)
+                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only, selected_stream_ids)
+                    else:
+                        state = sync_func(stream_schema, repo, state, mdata, start_date)
 
                 # handle streams with sub streams
                 else:
@@ -844,12 +872,13 @@ def do_sync(config, state, catalog, gitLocal):
                                                 sub_stream['key_properties'])
 
                     # sync stream and its sub streams
-                    if stream_id == 'commit_files':
+                    if stream_id == 'commit_files' or stream_id == 'commit_files_meta':
                         heads = get_pull_request_heads(repo)
                         # We don't need to also get open branch heads here becuase those are
                         # included in the git clone --mirror, though PR heads for merged PRs are
                         # not included.
-                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads)
+                        commits_only = stream_id == 'commit_files_meta'
+                        state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only, selected_stream_ids)
                     else:
                         state = sync_func(stream_schemas, org, repo, state, mdata, start_date)
 
@@ -878,6 +907,7 @@ def generate_jwt_token(issuer, subject, secret):
 
 @singer.utils.handle_top_exception(logger)
 def main():
+
     args = get_args()
 
     config = args.config
@@ -918,6 +948,10 @@ def main():
         # In cases where there was a lot of API data to ingest,
         # the token was expiring before we used it for cloning the repos
 
+        # Get catalog and selected streams for GitLocal initialization
+        catalog = args.properties if args.properties else get_catalog()
+        selected_stream_ids = get_selected_streams(catalog)
+        
         # Initialize GitLocal early
         domain = config['pull_domain'] if 'pull_domain' in config else 'bitbucket.org'
         git_local = GitLocal({
@@ -925,7 +959,8 @@ def main():
             'workingDir': '/tmp',
         }, 'https://{}@' + domain + '/{}', # repo is format: {org}/{repo}
             config['hmac_token'] if 'hmac_token' in config else None,
-            logger=logger)
+            logger=logger,
+            commitsOnly='commit_files_meta' in selected_stream_ids)
 
         # Clone repositories early if this is a files catalog
         # the other tap doesn't need this
@@ -936,7 +971,6 @@ def main():
                 logger.info("Cloning repository: %s", repo)
                 git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
 
-        catalog = args.properties if args.properties else get_catalog()
         do_sync(config, args.state, catalog, git_local)
 
 if __name__ == '__main__':
