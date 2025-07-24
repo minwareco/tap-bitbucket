@@ -962,10 +962,10 @@ def main():
             logger=logger,
             commitsOnly='commit_files_meta' in selected_stream_ids)
 
-        # Clone repositories early if this is a files catalog
+        # Clone repositories early if this is a files catalog or commit-files-meta catalog
         # the other tap doesn't need this
-        if args.properties_path and "files-catalog" in args.properties_path:
-            logger.info("Cloning repositories for files catalog")
+        if args.properties_path and ("files-catalog" in args.properties_path or "commit-files-meta-catalog" in args.properties_path):
+            logger.info("Cloning repositories early to avoid token expiration")
             repositories = list(filter(None, config['repository'].split(' ')))
             for repo in repositories:
                 logger.info("Cloning repository: %s", repo)
