@@ -460,6 +460,72 @@ async def getChangedfilesForCommits(commits, gitLocalRepoPath, gitLocal):
     results = await asyncio.gather(*coros)
     return results
 
+def fetch_missing_refs_batch(gitLocal, repo_path, missing_refs):
+    """
+    Attempt to fetch all missing refs in a single batch operation.
+    Returns list of refs that should be processed (empty list if fetch failed).
+    """
+    if not missing_refs:
+        return []
+    
+    # Extract just the SHAs for the batch fetch
+    missing_shas = [ref_info['sha'] for ref_info in missing_refs]
+    
+    logger.info('Attempting to batch fetch {} missing refs for {}'.format(len(missing_shas), repo_path))
+    
+    try:
+        # Call the GitLocal batch fetch method from minware-singer-utils PR #12
+        gitLocal.fetchMultipleCommits(repo_path, missing_shas, 'bitbucket')
+        logger.info('Successfully batch fetched {} refs for {}'.format(len(missing_shas), repo_path))
+        return missing_refs  # Return all refs for processing
+            
+    except Exception as e:
+        logger.warning('Batch fetch failed with exception for {}: {}'.format(repo_path, str(e)))
+        return []
+
+def process_head_commits(gitLocal, repo_path, headRef, headSha, fetchedCommits, commitQ, LOG_PAGE_SIZE):
+    """
+    Process all commits for a given head, handling pagination and parent tracking.
+    Returns the newlyFetchedCommits dictionary.
+    """
+    missingParents = {}
+    offset = 0
+    newlyFetchedCommits = {}
+    
+    while True:
+        commits = gitLocal.getCommitsFromHeadPyGit(repo_path, headSha,
+            limit = LOG_PAGE_SIZE, offset = offset, skipAtCommits=fetchedCommits)
+        
+        for commit in commits:
+            # Skip commits we've already imported
+            if commit['sha'] in fetchedCommits or commit['sha'] in newlyFetchedCommits:
+                continue
+
+            commitQ.append(commit)
+
+            # Record that we have now fetched this commit
+            newlyFetchedCommits[commit['sha']] = 1
+            # No longer a missing parent
+            missingParents.pop(commit['sha'], None)
+
+            # Keep track of new missing parents
+            for parent in commit['parents']:
+                if not parent['sha'] in fetchedCommits and not parent['sha'] in newlyFetchedCommits:
+                    missingParents[parent['sha']] = 1
+
+        # If there are no missing parents, then we are done prior to reaching the last page
+        if not missingParents:
+            break
+        elif len(commits) > 0:
+            offset += LOG_PAGE_SIZE
+        # Else if we have reached the end of our data but not found the parents, then we
+        # have a problem
+        else:
+            raise BitBucketException('Some commit parents never found for {}: {}'.format(
+                headRef, ','.join(missingParents.keys())))
+    
+    return newlyFetchedCommits
+
 def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, gitLocal, heads, commits_only=False, selected_stream_ids=None):
     stream_name = 'commit_files_meta' if commits_only else 'commit_files'
     bookmark = get_bookmark(state, repo_path, stream_name, "since", start_date)
@@ -498,6 +564,7 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
     with metrics.record_counter(stream_name) as counter:
         # First, walk through all the heads and queue up all the commits that need to be imported
         commitQ = []
+        missing_refs = []  # Track missing refs for batch fetch
 
         for headRef in heads:
             count += 1
@@ -524,57 +591,44 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
                 #logger.info('Head already fetched {} {}'.format(headRef, headSha))
                 continue
 
-            # Maintain a list of parents we are waiting to see
-            missingParents = {}
-
             # Verify that this commit exists in our mirrored repo
             commitHasLocal = gitLocal.hasLocalCommit(repo_path, headSha, True)
             if not commitHasLocal:
-                logger.warning('MISSING REF/COMMIT {}/{}/{}'.format(repo_path, headRef, headSha))
-                # Skip this now that we're mirroring everything. We shouldn't have anything that's
-                # missing from BitBucket's API
+                logger.debug('MISSING REF/COMMIT {}/{}/{} - will attempt batch fetch'.format(repo_path, headRef, headSha))
+                missing_refs.append({'ref': headRef, 'sha': headSha})
                 continue
 
 
-            offset = 0
-            newlyFetchedCommits = {}
-            while True:
-                commits = gitLocal.getCommitsFromHeadPyGit(repo_path, headSha,
-                    limit = LOG_PAGE_SIZE, offset = offset, skipAtCommits=fetchedCommits)
-
-                extraction_time = singer.utils.now()
-                for commit in commits:
-                    # Skip commits we've already imported
-                    if commit['sha'] in fetchedCommits or commit['sha'] in newlyFetchedCommits:
-                        continue
-
-                    commitQ.append(commit)
-
-                    # Record that we have now fetched this commit
-                    newlyFetchedCommits[commit['sha']] = 1
-                    # No longer a missing parent
-                    missingParents.pop(commit['sha'], None)
-
-                    # Keep track of new missing parents
-                    for parent in commit['parents']:
-                        if not parent['sha'] in fetchedCommits and not parent['sha'] in newlyFetchedCommits:
-                            missingParents[parent['sha']] = 1
-
-                # If there are no missing parents, then we are done prior to reaching the lst page
-                if not missingParents:
-                    break
-                elif len(commits) > 0:
-                    offset += LOG_PAGE_SIZE
-                # Else if we have reached the end of our data but not found the parents, then we have a
-                # problem
-                else:
-                    raise BitBucketException('Some commit parents never found: ' + \
-                        ','.join(missingParents.keys()))
-                # Otherwise, proceed to fetch the next page with the next iteration state
+            # Process all commits for this head
+            extraction_time = singer.utils.now()
+            newlyFetchedCommits = process_head_commits(gitLocal, repo_path, headRef, headSha,
+                                                      fetchedCommits, commitQ, LOG_PAGE_SIZE)
             
             # After successfully processing all commits for this head, add them to fetchedCommits
             fetchedCommits.update(newlyFetchedCommits)
 
+        # Attempt to batch fetch any missing refs before processing commits
+        if missing_refs:
+            logger.info('Found {} missing refs, attempting batch fetch for {}'.format(len(missing_refs), repo_path))
+            fetched_refs = fetch_missing_refs_batch(gitLocal, repo_path, missing_refs)
+            
+            if fetched_refs:
+                logger.info('Batch fetch succeeded, processing {} refs'.format(len(fetched_refs)))
+                
+                # Process the fetched refs
+                for ref_info in fetched_refs:
+                    headRef = ref_info['ref']
+                    headSha = ref_info['sha']
+                    
+                    logger.debug('Processing batch-fetched ref {}/{}'.format(headRef, headSha))
+                    
+                    # Process this head's commits using the extracted function
+                    newlyFetchedCommits = process_head_commits(gitLocal, repo_path, headRef, headSha,
+                                                              fetchedCommits, commitQ, LOG_PAGE_SIZE)
+                    
+                    fetchedCommits.update(newlyFetchedCommits)
+            else:
+                logger.warning('Batch fetch failed for {} refs in {}'.format(len(missing_refs), repo_path))
 
         # Now run through all the commits in parallel
         gc.collect()
