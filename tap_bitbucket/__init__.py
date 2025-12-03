@@ -224,7 +224,7 @@ def authed_request(source, url, method, data=None, headers=None):
             response = session.request(method, url, data=data)
             timer.tags[metrics.Tag.http_status_code] = response.status_code
 
-        if response.status_code in [429, 504]:
+        if response.status_code in [429, 500, 502, 503, 504]:
             retryCount += 1
             if retryCount < maxRetries:
                 # exponential backoff + 2-5 second jitter
