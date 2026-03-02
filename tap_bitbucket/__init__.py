@@ -19,7 +19,7 @@ import jwt
 from random import randint
 import sys
 
-from minware_singer_utils import GitLocal, SecureLogger
+from minware_singer_utils import GitLocal, GitLocalRepoNotFoundException, SecureLogger
 
 from singer import metadata
 
@@ -882,7 +882,8 @@ def do_sync(config, state, catalog, gitLocal):
 
         org = repo.split('/')[0]
 
-        for stream in catalog['streams']:
+        try:
+            for stream in catalog['streams']:
             stream_id = stream['tap_stream_id']
             stream_schema = stream['schema']
             mdata = stream['metadata']
@@ -935,6 +936,10 @@ def do_sync(config, state, catalog, gitLocal):
                         state = sync_func(stream_schemas, org, repo, state, mdata, start_date, gitLocal, heads, commits_only, selected_stream_ids)
                     else:
                         state = sync_func(stream_schemas, org, repo, state, mdata, start_date)
+
+        except GitLocalRepoNotFoundException as e:
+            logger.warning(f'Repository {repo} not found, skipping: {e}')
+            continue
 
     # The state can get big, don't write it until the end
     singer.write_state(state)
@@ -1024,7 +1029,11 @@ def main():
             repositories = list(filter(None, config['repository'].split(' ')))
             for repo in repositories:
                 logger.info("Cloning repository: %s", repo)
-                git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
+                try:
+                    git_local._initRepo(repo, git_local._getRepoWorkingDir(repo))
+                except GitLocalRepoNotFoundException as e:
+                    logger.warning(f'Repository {repo} not found during early clone, skipping: {e}')
+                    continue
 
         do_sync(config, args.state, catalog, git_local)
 
