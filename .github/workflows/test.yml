@@ -21,9 +21,18 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
+    - name: Configure git for private repos
+      env:
+        TOKEN: ${{ secrets.TOKEN_FOR_ACTIONS_CHECKOUT }}
+      run: |
+        if [ -z "$TOKEN" ]; then
+          echo "Error: TOKEN_FOR_ACTIONS_CHECKOUT secret is not available"
+          exit 1
+        fi
+        git config --global url."https://${TOKEN}@github.com/".insteadOf "https://github.com/"
+
     - name: Install dependencies
       env:
-        GITHUB_TOKEN: ${{ secrets.TOKEN_FOR_ACTIONS_CHECKOUT }}
         UTILS_VERSION: main
       run: |
         python -m pip install --upgrade pip
