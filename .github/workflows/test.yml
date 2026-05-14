@@ -24,9 +24,16 @@ jobs:
     - name: Get latest minware-singer-utils version
       id: get-utils-version
       run: |
-        LATEST_COMMIT=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          https://api.github.com/repos/minwareco/minware-singer-utils/commits/main \
-          | python -c "import sys,json; print(json.load(sys.stdin)['sha'])")
+        RESPONSE=$(curl -s -w "\n%{http_code}" -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/repos/minwareco/minware-singer-utils/commits/main)
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "GitHub API returned HTTP $HTTP_CODE"
+          echo "$BODY"
+          exit 1
+        fi
+        LATEST_COMMIT=$(echo "$BODY" | python -c "import sys,json; print(json.load(sys.stdin)['sha'])")
         echo "UTILS_VERSION=$LATEST_COMMIT" >> $GITHUB_ENV
         echo "Using minware-singer-utils version: $LATEST_COMMIT"
       env:
