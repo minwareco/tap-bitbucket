@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.9']
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Get latest minware-singer-utils version
+      id: get-utils-version
+      run: |
+        LATEST_COMMIT=$(gh api repos/minwareco/minware-singer-utils/commits/main --jq '.sha')
+        echo "UTILS_VERSION=$LATEST_COMMIT" >> $GITHUB_ENV
+        echo "Using minware-singer-utils version: $LATEST_COMMIT"
+      env:
+        GH_TOKEN: ${{ secrets.MINWARE_GITHUB_TOKEN }}
+
+    - name: Install dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.MINWARE_GITHUB_TOKEN }}
+        UTILS_VERSION: ${{ env.UTILS_VERSION }}
+      run: |
+        if [ -z "$UTILS_VERSION" ]; then
+          echo "Error: UTILS_VERSION is not set"
+          exit 1
+        fi
+        echo "Installing with UTILS_VERSION=$UTILS_VERSION"
+        python -m pip install --upgrade pip
+        pip install -e .[dev]
+        pip install pytest
+
+    - name: Run unit tests
+      run: |
+        python -m pytest tests/unittests/ -v --tb=short
