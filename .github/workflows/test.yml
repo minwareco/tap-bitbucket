@@ -24,7 +24,7 @@ jobs:
     - name: Get latest minware-singer-utils version
       id: get-utils-version
       run: |
-        RESPONSE=$(curl -s -w "\n%{http_code}" -H "Authorization: token $GITHUB_TOKEN" \
+        RESPONSE=$(curl -s -w "\n%{http_code}" -H "Authorization: Bearer $GITHUB_TOKEN" \
           https://api.github.com/repos/minwareco/minware-singer-utils/commits/main)
         HTTP_CODE=$(echo "$RESPONSE" | tail -1)
         BODY=$(echo "$RESPONSE" | sed '$d')
