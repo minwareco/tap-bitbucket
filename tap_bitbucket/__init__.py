@@ -28,6 +28,16 @@ logger = SecureLogger(singer.get_logger())
 
 repo_cache = {}
 
+# JWT-auth refresh state. Only used when the tap is configured with JWT credentials
+# (Atlassian Connect-style); the basic-auth/PAT path leaves these untouched. The
+# generated JWT has a 6-hour expiry (see generate_jwt_token), so syncs that run
+# longer than that must regenerate it mid-flight or the API starts returning 401.
+using_jwt_auth = False
+last_jwt_client_key = None
+last_jwt_shared_secret = None
+last_jwt_subject = None
+last_jwt_config = None
+
 REQUIRED_CONFIG_KEYS = ['start_date', 'user_name', 'access_token', 'repository']
 REQUIRED_CONFIG_KEYS_JWT = ['start_date', 'jwt_client_key', 'jwt_shared_secret', 'jwt_subject', 'repository']
 
@@ -208,11 +218,13 @@ def get_repo_metadata(repo_path):
         repo_cache[repo_path] = response
     return repo_cache[repo_path]
 
-def authed_request(source, url, method, data=None, headers=None):
+def authed_request(source, url, method, data=None, headers=None, from_token_refresh=False):
 
     response = None
     retryCount = 0
     maxRetries = 8
+    # Guard so a 401 on the retried request does not loop back into another refresh.
+    just_refreshed_token = False
     if headers is not None:
         session.headers.update(headers)
 
@@ -223,6 +235,21 @@ def authed_request(source, url, method, data=None, headers=None):
             timer.tags['method'] = method
             response = session.request(method, url, data=data)
             timer.tags[metrics.Tag.http_status_code] = response.status_code
+
+        # On the JWT auth path, the access token may expire mid-sync (the JWT is 6h).
+        # On a 401, regenerate the JWT once and retry; if the retry also 401s, fall
+        # through to the normal error path. from_token_refresh=True bypasses this for
+        # the OAuth-exchange call inside refresh_app_token to avoid recursion.
+        if (response.status_code == 401
+                and using_jwt_auth
+                and not just_refreshed_token
+                and not from_token_refresh):
+            logger.info("Got 401, refreshing access token and retrying: {} {}".format(
+                method, url))
+            refresh_app_token()
+            just_refreshed_token = True
+            response = None
+            continue
 
         if response.status_code in [429, 500, 502, 503, 504]:
             retryCount += 1
@@ -251,11 +278,13 @@ def authed_request(source, url, method, data=None, headers=None):
 
     return response.json()
 
-def authed_post(source, url, data, headers=None):
-    return authed_request(source, url, 'post', data, headers)
+def authed_post(source, url, data, headers=None, from_token_refresh=False):
+    return authed_request(source, url, 'post', data, headers,
+                          from_token_refresh=from_token_refresh)
 
-def authed_get(source, url, headers=None):
-    return authed_request(source, url, 'GET', None, headers)
+def authed_get(source, url, headers=None, from_token_refresh=False):
+    return authed_request(source, url, 'GET', None, headers,
+                          from_token_refresh=from_token_refresh)
 
 def authed_get_all_pages(source, url, headers=None):
     while True:
@@ -684,10 +713,11 @@ def sync_all_commit_files(schemas, org, repo_path, state, mdata, start_date, git
 
 def get_pull_request_heads(repo_path):
     heads = {}
+    # Bitbucket caps pagelen on the pullrequests endpoint at 50 (other endpoints allow 100).
     for prs in authed_get_all_pages(
         'pull_requests',
         'https://api.bitbucket.org/2.0/repositories/{}/pullrequests?'.format(repo_path) + \
-            'state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'
+            'pagelen=50&state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'
     ):
         for pr in prs:
             prNumber = pr['id']
@@ -719,7 +749,7 @@ def sync_all_pull_requests(schemas, org, repo_path, state, mdata, start_date):
         for prs in authed_get_all_pages(
             'pull_requests',
             'https://api.bitbucket.org/2.0/repositories/{}/pullrequests?'.format(repo_path) + \
-                'q={}&sort=updated_on&state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'.format(query)
+                'pagelen=50&q={}&sort=updated_on&state=OPEN&state=MERGED&state=DECLINED&state=SUPERSEDED'.format(query)
         ):
             for pr in prs:
                 # we have to fetch the PR on its own in order to get the full data payload. notably,
@@ -964,6 +994,51 @@ def generate_jwt_token(issuer, subject, secret):
 
     return encoded_jwt
 
+def refresh_app_token(jwt_client_key=None, jwt_shared_secret=None, jwt_subject=None,
+                      config=None):
+    # Generate a fresh JWT (and corresponding OAuth access token for git operations) on
+    # the JWT auth path. Safe to call repeatedly: the first call must pass all JWT
+    # params; subsequent calls can be parameterless and will reuse the cached values.
+    # Modeled on tap-github's refresh_app_token (see MW-11795 / MW-6112).
+    global last_jwt_client_key, last_jwt_shared_secret, last_jwt_subject, last_jwt_config
+
+    if jwt_client_key is None:
+        jwt_client_key = last_jwt_client_key
+    else:
+        last_jwt_client_key = jwt_client_key
+    if jwt_shared_secret is None:
+        jwt_shared_secret = last_jwt_shared_secret
+    else:
+        last_jwt_shared_secret = jwt_shared_secret
+    if jwt_subject is None:
+        jwt_subject = last_jwt_subject
+    else:
+        last_jwt_subject = jwt_subject
+    if config is None:
+        config = last_jwt_config
+    else:
+        last_jwt_config = config
+
+    jwt_token = generate_jwt_token(jwt_client_key, jwt_subject, jwt_shared_secret)
+    session.headers.update({'authorization': 'JWT ' + jwt_token})
+
+    # Exchange the JWT for an OAuth access token used by git clone/fetch. Pass
+    # from_token_refresh=True so a 401 from this call does not recurse back into
+    # refresh_app_token.
+    access_token_response = authed_post(
+        'access token request',
+        'https://bitbucket.org/site/oauth2/access_token',
+        {'grant_type': 'urn:bitbucket:oauth2:jwt'},
+        {'Content-Type': 'application/x-www-form-urlencoded'},
+        from_token_refresh=True)
+
+    access_token = access_token_response['access_token']
+    logger.addToken(access_token)
+    if config is not None:
+        config['git_access_token'] = "x-token-auth:{}".format(access_token)
+
+    return access_token
+
 @singer.utils.handle_top_exception(logger)
 def main():
 
@@ -980,24 +1055,18 @@ def main():
         session.auth = (user_name, access_token)
         config["git_access_token"] = "{}:{}".format(user_name, access_token)
     elif 'jwt_client_key' in args.config:
-        
+        global using_jwt_auth
+        using_jwt_auth = True
+
         logger.addToken(args.config['jwt_client_key'])
         logger.addToken(args.config['jwt_subject'])
         logger.addToken(args.config['jwt_shared_secret'])
 
-        jwt_token = generate_jwt_token(
-            args.config['jwt_client_key'],
-            args.config['jwt_subject'],
-            args.config['jwt_shared_secret'])
-        session.headers.update({'authorization': 'JWT ' + jwt_token})
-        access_token_response = authed_post(
-            'access token request',
-            'https://bitbucket.org/site/oauth2/access_token',
-            {'grant_type': 'urn:bitbucket:oauth2:jwt'},
-            {'Content-Type': 'application/x-www-form-urlencoded'})
-
-        config["git_access_token"] = "x-token-auth:{}".format(access_token_response['access_token'])
-        logger.addToken(access_token_response['access_token'])
+        refresh_app_token(
+            jwt_client_key=args.config['jwt_client_key'],
+            jwt_shared_secret=args.config['jwt_shared_secret'],
+            jwt_subject=args.config['jwt_subject'],
+            config=config)
 
     if args.discover:
         do_discover(config)
