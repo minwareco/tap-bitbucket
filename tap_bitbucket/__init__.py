@@ -26,6 +26,35 @@ from singer import metadata
 session = requests.Session()
 logger = SecureLogger(singer.get_logger())
 
+# Transient network failures that `requests` raises (instead of returning a
+# response) when Bitbucket drops the connection mid-request — e.g. the
+# ConnectionResetError(104, 'Connection reset by peer') behind MW-12382. These
+# happen before any response object exists, so they bypass the status-code
+# retry logic below and must be caught explicitly and retried.
+#
+# We handle these in the authed_request retry loop rather than delegating to
+# requests' built-in transport retries (HTTPAdapter(max_retries=Retry(...))) on
+# purpose: authed_request already owns a retry loop for 429/5xx *and* the JWT
+# 401 token refresh, neither of which urllib3's Retry can do. Keeping connection
+# errors in that same loop means one backoff schedule, one set of singer
+# `request_backoff` metrics + retryCount tags, and one place to reason about
+# retries — instead of a second, independent retry mechanism (with urllib3's
+# different 120s-capped backoff and no metrics) running underneath it.
+RETRYABLE_CONNECTION_ERRORS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+    requests.exceptions.Timeout,
+)
+
+def drop_pooled_connections():
+    # After an idle backoff sleep the pooled keep-alive connection has often
+    # been closed server-side by Bitbucket; reusing it on the retry yields
+    # ConnectionResetError(104, 'Connection reset by peer') (MW-12382). Dropping
+    # pooled connections forces the retry to open a fresh socket. The session
+    # stays usable afterward and its auth headers are preserved.
+    for adapter in session.adapters.values():
+        adapter.close()
+
 repo_cache = {}
 
 # JWT-auth refresh state. Only used when the tap is configured with JWT credentials
@@ -230,11 +259,35 @@ def authed_request(source, url, method, data=None, headers=None, from_token_refr
 
     while response is None and retryCount < maxRetries:
 
-        with metrics.http_request_timer(source) as timer:
-            timer.tags['url'] = url
-            timer.tags['method'] = method
-            response = session.request(method, url, data=data)
-            timer.tags[metrics.Tag.http_status_code] = response.status_code
+        try:
+            with metrics.http_request_timer(source) as timer:
+                timer.tags['url'] = url
+                timer.tags['method'] = method
+                response = session.request(method, url, data=data)
+                timer.tags[metrics.Tag.http_status_code] = response.status_code
+        except RETRYABLE_CONNECTION_ERRORS as ex:
+            # Transient connection drop (e.g. 'Connection reset by peer'). No
+            # response exists, so reuse the same exponential backoff + retry
+            # budget as 429/5xx responses; re-raise once retries are exhausted
+            # so a genuine outage still surfaces as an error.
+            retryCount += 1
+            if retryCount >= maxRetries:
+                logger.info("Connection error, retries exhausted: {} {}: {}".format(
+                    method, url, ex))
+                raise
+            with singer.metrics.Timer('request_backoff', { 'retryCount': retryCount }) as backoff_timer:
+                backoff_timer.tags['backoff_type'] = 'connection_error'
+                response = None
+                sleep_time = 20 * (2**retryCount) + randint(2, 5)
+                backoff_timer.tags['sleep_time'] = sleep_time
+                time.sleep(sleep_time)
+                logger.info(
+                    "Connection error, retryCount = {} elapsed = {:.2f}s, requesting {} {}: {}".format(
+                        retryCount, backoff_timer.elapsed(), method, url, ex
+                    )
+                )
+            drop_pooled_connections()
+            continue
 
         # On the JWT auth path, the access token may expire mid-sync (the JWT is 6h).
         # On a 401, regenerate the JWT once and retry; if the retry also 401s, fall
@@ -267,6 +320,7 @@ def authed_request(source, url, method, data=None, headers=None, from_token_refr
                             retryCount, backoff_timer.elapsed(), method, url
                         )
                     )
+                drop_pooled_connections()
                 continue
 
         if response.status_code != 200:
