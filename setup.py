@@ -18,7 +18,7 @@ setup(name='tap-bitbucket',
           'psutil==5.8.0',
           'debugpy==1.5.1',
           'PyJWT==2.8.0',
-          'cryptography==42.0.1',
+          'cryptography==50.0.0',
           'minware_singer_utils@git+https://{}github.com/minwareco/minware-singer-utils.git@{}'.format(
               "{}@".format(os.environ.get("GITHUB_TOKEN")) if os.environ.get("GITHUB_TOKEN") else "",
               UTILS_VERSION
