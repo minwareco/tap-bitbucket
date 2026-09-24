@@ -14,11 +14,11 @@ setup(name='tap-bitbucket',
       py_modules=['tap_bitbucket'],
       install_requires=[
           'singer-python==5.12.1',
-          'requests==2.20.0',
+          'requests==2.33.0',
           'psutil==5.8.0',
           'debugpy==1.5.1',
-          'PyJWT==2.8.0',
-          'cryptography==42.0.1',
+          'PyJWT==2.13.0',
+          'cryptography==50.0.0',
           'minware_singer_utils@git+https://{}github.com/minwareco/minware-singer-utils.git@{}'.format(
               "{}@".format(os.environ.get("GITHUB_TOKEN")) if os.environ.get("GITHUB_TOKEN") else "",
               UTILS_VERSION
