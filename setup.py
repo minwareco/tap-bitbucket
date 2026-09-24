@@ -14,7 +14,7 @@ setup(name='tap-bitbucket',
       py_modules=['tap_bitbucket'],
       install_requires=[
           'singer-python==5.12.1',
-          'requests==2.33.0',
+          'requests==2.32.5',
           'psutil==5.8.0',
           'debugpy==1.5.1',
           'PyJWT==2.13.0',
